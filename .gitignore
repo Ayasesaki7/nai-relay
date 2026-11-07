@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 .venv/
 dist/
+certs/
 .env.*
 !.env.example
 
