@@ -1,0 +1,9 @@
+{$DOMAIN} {
+	request_body {
+		max_size 50MB
+	}
+	reverse_proxy nai-proxy:8000 {
+		# 流式生图接口需要立即刷新，不能缓冲
+		flush_interval -1
+	}
+}

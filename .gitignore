@@ -1,0 +1,12 @@
+.env
+logs/
+__pycache__/
+*.pyc
+.venv/
+dist/
+.env.*
+!.env.example
+
+# 各自服务器的部署配置与记录，不公开
+compose.server.yml
+DEPLOYMENT.server.md

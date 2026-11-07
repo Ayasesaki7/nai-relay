@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NAI Studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%238f7bff'/%3E%3Cstop offset='1' stop-color='%23e98bd8'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M16 2 30 16 16 30 2 16z' fill='url(%23g)'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+  <script type="module" src="/static/js/app.js"></script>
+</head>
+<body>
+  <div id="login" class="overlay login" hidden>
+    <form class="login-card" id="login-form" autocomplete="on">
+      <div class="brand big">
+        <svg class="logo" viewBox="0 0 32 32" width="34" height="34"><use href="#logo"/></svg>
+        <span>NAI Studio</span>
+      </div>
+      <p class="muted">输入管理员发给你的访问密钥</p>
+      <input id="login-key" type="password" placeholder="sk-…" autocomplete="current-password" spellcheck="false">
+      <div id="login-error" class="error-text"></div>
+      <button class="btn primary block" type="submit">进入</button>
+      <p class="faint small">密钥只保存在本浏览器里。第三方工具也可以用同一个密钥，地址填本站域名。</p>
+    </form>
+  </div>
+
+  <header class="topbar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 32 32" width="22" height="22"><use href="#logo"/></svg>
+      <span>NAI Studio</span>
+    </div>
+    <div class="top-stats">
+      <div class="stat" id="stat-queue" title="中转队列：所有人共用一个队列，一次只生成一张">
+        <span class="dot"></span><span id="queue-text">—</span>
+      </div>
+      <div class="stat" id="stat-usage" hidden title="V5 Opus 额度">
+        <div class="battery"><i id="usage-bar"></i></div><span id="usage-text"></span>
+      </div>
+      <div class="stat" id="stat-anlas" title="Anlas 余额">
+        <svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 2 21 12 12 22 3 12z" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        <span id="anlas">—</span>
+        <span class="tier" id="tier"></span>
+      </div>
+      <div class="user">
+        <span class="avatar" id="user-avatar"></span>
+        <span id="user-name"></span>
+        <button class="icon-btn" id="logout" title="退出登录"></button>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="panel controls">
+      <div class="controls-scroll">
+        <section class="sec">
+          <div class="seg models" id="models"></div>
+          <div class="hint" id="model-hint"></div>
+        </section>
+
+        <section class="sec">
+          <div class="sec-title">
+            <span>提示词</span>
+            <label class="mini-switch"><input type="checkbox" data-key="quality"><i></i>质量词</label>
+          </div>
+          <div class="ta-wrap">
+            <textarea id="prompt" class="tag-input" data-key="prompt" rows="5" placeholder="1girl, silver hair, looking at viewer, night sky…" spellcheck="false"></textarea>
+          </div>
+          <div class="sec-title sub">
+            <span>负面提示词</span>
+            <select data-key="ucPreset" id="uc-preset" class="mini-select" title="负面预设，会加在下面内容的前面"></select>
+          </div>
+          <div class="ta-wrap">
+            <textarea id="negative" class="tag-input" data-key="negative" rows="2" placeholder="额外的负面词（可选）" spellcheck="false"></textarea>
+          </div>
+        </section>
+
+        <section class="sec">
+          <div class="sec-title">
+            <span>角色 <span class="count" id="char-count"></span></span>
+            <label class="mini-switch"><input type="checkbox" data-key="autoPosition"><i></i>AI 决定位置</label>
+          </div>
+          <div id="chars" class="chars"></div>
+          <button class="btn dashed block" id="add-char" type="button"></button>
+        </section>
+
+        <section class="sec">
+          <div class="tabs" id="ref-tabs">
+            <button type="button" data-tab="charRef">角色参考<span class="badge"></span></button>
+            <button type="button" data-tab="vibe">氛围迁移<span class="badge"></span></button>
+            <button type="button" data-tab="base">底图 / 重绘<span class="badge"></span></button>
+          </div>
+          <div class="tab-pane" data-pane="charRef" id="pane-charRef"></div>
+          <div class="tab-pane" data-pane="vibe" id="pane-vibe"></div>
+          <div class="tab-pane" data-pane="base" id="pane-base"></div>
+        </section>
+
+        <section class="sec">
+          <div class="sec-title"><span>尺寸</span><span class="hint inline" id="pixel-hint"></span></div>
+          <div class="chips" id="sizes"></div>
+          <div class="size-row">
+            <input type="number" class="num" data-key="width" data-num step="64" min="64" max="3072" title="宽">
+            <button class="icon-btn" id="swap-size" type="button" title="交换宽高">⇄</button>
+            <input type="number" class="num" data-key="height" data-num step="64" min="64" max="3072" title="高">
+          </div>
+          <div class="hint" id="size-lock" hidden>使用底图时尺寸跟随底图</div>
+        </section>
+
+        <section class="sec">
+          <div class="sec-title"><span>参数</span></div>
+          <div class="field"><label>步数</label><div class="slider" data-slider="steps" data-min="1" data-max="50" data-step="1"></div></div>
+          <div class="field"><label>提示词引导</label><div class="slider" data-slider="scale" data-min="0" data-max="10" data-step="0.1"></div></div>
+          <div class="field"><label>引导重缩放</label><div class="slider" data-slider="cfgRescale" data-min="0" data-max="1" data-step="0.02"></div></div>
+          <div class="grid2">
+            <div class="field col"><label>采样器</label><select data-key="sampler" id="sampler"></select></div>
+            <div class="field col" data-cap="noiseSchedule"><label>噪声调度</label><select data-key="noiseSchedule" id="noise-schedule"></select></div>
+          </div>
+          <div class="grid2">
+            <div class="field col">
+              <label>种子</label>
+              <div class="seed-box">
+                <input data-key="seed" id="seed" placeholder="随机" inputmode="numeric" spellcheck="false">
+                <button class="icon-btn" id="seed-dice" type="button" title="随机一个种子"></button>
+                <button class="icon-btn" id="seed-clear" type="button" title="改回随机"></button>
+              </div>
+            </div>
+            <div class="field col"><label>张数</label><div class="seg small" id="nsamples"></div></div>
+          </div>
+          <label class="switch-row" data-cap="variety">
+            <span><b>Variety+</b><small>前几步跳过引导，构图更多样</small></span>
+            <input type="checkbox" class="switch" data-key="variety">
+          </label>
+          <label class="switch-row" data-cap="transparency">
+            <span><b>透明背景</b><small>输出带透明通道的 PNG</small></span>
+            <input type="checkbox" class="switch" data-key="transparent">
+          </label>
+        </section>
+      </div>
+
+      <div class="gen-bar">
+        <button class="btn gen" id="generate" type="button">
+          <span class="gen-label" id="gen-label">生成</span>
+          <span class="cost" id="cost"></span>
+        </button>
+      </div>
+    </aside>
+
+    <section class="stage">
+      <div class="viewer" id="viewer">
+        <div class="empty" id="empty">
+          <svg class="logo" viewBox="0 0 32 32" width="56" height="56"><use href="#logo"/></svg>
+          <h2>开始创作</h2>
+          <p>写好提示词后点击生成，或按 <kbd>Ctrl</kbd> + <kbd>Enter</kbd></p>
+          <p class="faint">把 NAI 生成的 PNG 拖进来可以读取参数，其他图片会设为底图</p>
+        </div>
+        <img id="view-img" alt="" hidden>
+        <div class="busy" id="busy" hidden>
+          <div class="ring"></div>
+          <div class="busy-text" id="busy-text">生成中</div>
+          <div class="mono faint" id="busy-time">0.0s</div>
+          <button class="btn ghost small" id="busy-cancel" type="button">取消</button>
+        </div>
+        <div class="drop-hint" id="drop-hint" hidden><div>松开读取参数 / 设为底图</div></div>
+      </div>
+      <div class="batch" id="batch" hidden></div>
+      <div class="toolbar" id="toolbar">
+        <div class="meta mono" id="view-meta"></div>
+        <div class="tools" id="tools"></div>
+      </div>
+    </section>
+
+    <aside class="panel history">
+      <div class="hist-head">
+        <span>历史 <span class="count" id="hist-count"></span></span>
+        <button class="icon-btn" id="hist-clear" type="button" title="清空历史"></button>
+      </div>
+      <div class="hist-grid" id="history"></div>
+      <div class="hist-empty faint" id="hist-empty">生成的图片会保存在这个浏览器里</div>
+    </aside>
+  </main>
+
+  <div id="menu" class="menu" hidden></div>
+  <div id="suggest" class="suggest" hidden></div>
+  <div id="toasts" class="toasts"></div>
+
+  <svg width="0" height="0" style="position:absolute">
+    <defs>
+      <linearGradient id="logo-g" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#8f7bff"/><stop offset="1" stop-color="#e98bd8"/>
+      </linearGradient>
+      <symbol id="logo" viewBox="0 0 32 32">
+        <path d="M16 2 30 16 16 30 2 16z" fill="url(#logo-g)"/>
+        <path d="M16 8 24 16 16 24 8 16z" fill="#0b0c10" opacity=".55"/>
+        <path d="M16 12.5 19.5 16 16 19.5 12.5 16z" fill="#fff" opacity=".9"/>
+      </symbol>
+    </defs>
+  </svg>
+</body>
+</html>
