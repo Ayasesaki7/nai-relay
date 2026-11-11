@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import random
@@ -10,7 +11,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from . import config
 from . import logger as log
@@ -178,18 +179,54 @@ async def me(request: Request):
             "queue": {"busy": queue._lock.locked(), "waiting": queue.waiting}}
 
 
-# 自带的网页前端；必须注册在下面的通配路由之前
+# 自带的网页前端；必须注册在下面的通配路由之前。
+# 页面里的脚本和样式走 /static/v/<版本>/…，版本是网页文件内容的哈希：
+# 更新后地址就变了，浏览器和 Cloudflare 不会继续用旧缓存（JS 里的相对 import 也跟着变）。
+def _asset_version() -> str:
+    digest = hashlib.sha256()
+    for p in sorted(WEB_DIR.rglob("*")):
+        if p.is_file():
+            digest.update(p.relative_to(WEB_DIR).as_posix().encode() + b"\0" + p.read_bytes())
+    return digest.hexdigest()[:12]
+
+
+ASSET_VERSION = _asset_version()
+
+
+def _page(name: str, headers: dict) -> HTMLResponse:
+    html = (WEB_DIR / name).read_text(encoding="utf-8").replace("__V__", ASSET_VERSION)
+    return HTMLResponse(html, headers=headers)
+
+
 @app.get("/", include_in_schema=False)
 async def index():
-    return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+    return _page("index.html", {"Cache-Control": "no-cache"})
 
 
-app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+@app.get("/static/v/{ver}/{name:path}", include_in_schema=False)
+async def versioned_static(ver: str, name: str):
+    path = (WEB_DIR / name).resolve()
+    if not path.is_relative_to(WEB_DIR) or not path.is_file():
+        return _error(404, "Not found")
+    cache = "public, max-age=31536000, immutable" if ver == ASSET_VERSION else "no-cache"
+    return FileResponse(path, headers={"Cache-Control": cache})
+
+
+class _RevalidatedStatic(StaticFiles):
+    """不带版本号的旧地址每次都向服务器确认，避免被缓存几个小时"""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/static", _RevalidatedStatic(directory=WEB_DIR), name="static")
 
 
 @app.get('/manage', include_in_schema=False)
 async def manage_page():
-    return FileResponse(WEB_DIR / 'manage.html', headers={'Cache-Control': 'no-store',
+    return _page('manage.html', {'Cache-Control': 'no-store',
         'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer',
         'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"})
 

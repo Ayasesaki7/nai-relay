@@ -183,6 +183,20 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(me['id'], m.control.identity(MEMBER)['id'])
         self.assertFalse(me['is_admin'])
         self.assertEqual((await self.client.get('/proxy/me')).status_code, 401)
+    async def test_pages_use_versioned_assets(self):
+        v = m.ASSET_VERSION
+        for page in ['/', '/manage']:
+            html = (await self.client.get(page)).text
+            self.assertNotIn('__V__', html)
+            self.assertIn(f'/static/v/{v}/style.css', html)
+        js = await self.client.get(f'/static/v/{v}/js/util.js')
+        self.assertEqual(js.status_code, 200)
+        self.assertIn('immutable', js.headers['cache-control'])
+        self.assertEqual((await self.client.get('/static/v/old/js/util.js')).headers['cache-control'], 'no-cache')
+        self.assertEqual((await self.client.get('/static/js/util.js')).headers['cache-control'], 'no-cache')
+        for bad in [f'/static/v/{v}/../app/config.py', f'/static/v/{v}/%2e%2e/app/config.py', f'/static/v/{v}/nope.js']:
+            self.assertEqual((await self.client.get(bad)).status_code, 404, bad)
+
 
 if __name__ == '__main__':
     unittest.main()
