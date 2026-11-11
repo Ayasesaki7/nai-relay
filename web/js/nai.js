@@ -310,7 +310,7 @@ export function createApi(getKey, onUnauthorized) {
       let msg = res.statusText;
       try {
         const j = await res.json();
-        msg = j.message || msg;
+        msg = j.message || (typeof j.detail === 'string' ? j.detail : '') || msg;
       } catch {}
       if (res.status === 401 && msg === 'Invalid proxy key') onUnauthorized();
       throw new ApiError(res.status, explain(res.status, msg));
@@ -326,6 +326,10 @@ export function createApi(getKey, onUnauthorized) {
     upscale: (body, signal) => request('POST', '/ai/upscale', { json: body, signal, binary: true }),
     suggestTags: (model, prompt, signal) =>
       request('GET', `/ai/generate-image/suggest-tags?model=${encodeURIComponent(model)}&prompt=${encodeURIComponent(prompt)}&lang=en`, { signal }),
+    tagSearch: (q, cat, limit, signal) =>
+      request('GET', `/proxy/tags/search?q=${encodeURIComponent(q)}${cat == null ? '' : `&cat=${cat}`}&limit=${limit}`, { signal }),
+    tagLookup: (names) => request('POST', '/proxy/tags/lookup', { json: { names } }),
+    tagDetail: (name) => request('GET', `/proxy/tags/detail?name=${encodeURIComponent(name)}`),
   };
 }
 

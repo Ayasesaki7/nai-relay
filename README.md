@@ -63,6 +63,7 @@ location / {
 - 图生图、画蒙版局部重绘
 - 放大、导演工具（去背景、线稿、素描、上色、改表情、去杂物）
 - 提示词补全、生成费用估算、Anlas / V5 额度显示、队列状态
+- TAG 检索（`Ctrl+K`）：用中文或英文查 Danbooru TAG，看中文意思、分类、热度、别名和相关 TAG，一键加到正面 / 负面 / 某个角色；输入中文时补全会给出对应的英文 TAG
 - 历史记录：保存在**各自浏览器**里（IndexedDB），不会上传到服务器，换浏览器看不到
 - 把 NAI 生成的 PNG 拖进页面可以读取参数，其他图片会设为底图；`Ctrl+Enter` 生成，`←` `→` 翻看
 
@@ -115,3 +116,5 @@ docker compose up -d --build     # 改了代码、网页或 .env 之后（restar
 ## 许可证
 
 [MIT](LICENSE)
+
+中文词库来自 [ffdkj/ffdkj-Danbooru_Tag-Chinese-English-Translation-Table](https://github.com/ffdkj/ffdkj-Danbooru_Tag-Chinese-English-Translation-Table)（MIT），服务启动后自动下载到 `data/` 并每天更新；别名和相关 TAG 由服务器向 Danbooru 实时查询。

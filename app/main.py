@@ -17,6 +17,7 @@ from . import config
 from . import logger as log
 from .control import ControlStore
 from .management import bearer, create_router
+from .tags import TagDict, create_tag_router, keep_updated, DICT_FILE
 
 IMAGE = config.IMAGE_UPSTREAM
 API = config.API_UPSTREAM
@@ -87,6 +88,7 @@ class ClosingStreamingResponse(StreamingResponse):
 queue = GenQueue()
 control = ControlStore(os.environ.get('CONTROL_FILE', '/app/data/control.json'), config.NAI_TOKEN, config.PROXY_KEYS)
 client: httpx.AsyncClient
+tag_dict = TagDict(DICT_FILE)
 
 
 @asynccontextmanager
@@ -99,9 +101,13 @@ async def lifespan(app: FastAPI):
         follow_redirects=False,
     )
     log.event(evt="startup", users=sorted(config.PROXY_KEYS.values()))
+    stop = asyncio.Event()
+    updater = asyncio.create_task(keep_updated(tag_dict, stop))
     try:
         yield
     finally:
+        stop.set()
+        updater.cancel()
         await client.aclose()
 
 
@@ -110,6 +116,7 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.include_router(create_router(control, lambda: client,
                                 lambda: {'busy': queue._lock.locked(), 'waiting': queue.waiting}))
+app.include_router(create_tag_router(control, tag_dict, lambda: client))
 
 
 def _error(status: int, message: str) -> JSONResponse:

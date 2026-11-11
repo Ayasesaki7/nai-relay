@@ -1,4 +1,5 @@
 import * as N from './nai.js';
+import { createTagPanel, CJK, toPrompt, fmtCount } from './tags.js';
 import {
   $, h, icon, blobToB64, bytesToB64, hashString, padForReference, fitDims, resizeToPng, makeThumb,
   quantizeMask, unzip, isImageBytes, readPngText, readStealthMeta, zipFiles, store, safeStorage, uid, randomSeed, clamp,
@@ -69,6 +70,19 @@ const model = () => N.modelById(S.modelId);
 const caps = () => N.capsOf(model());
 const cur = () => (app.view ? app.view.items[app.view.index] : null);
 const api = N.createApi(() => app.key, () => logout('密钥已失效，请重新输入'));
+// TAG 检索面板可以往这些输入框里加词：正面、负面、各个角色
+let lastTagTarget = 'prompt';
+const tagPanel = createTagPanel({
+  api,
+  toast: (...a) => toast(...a),
+  beforeEdit: () => { sug.skip = true; },
+  targets: () => [
+    { id: 'prompt', label: '正面', ta: $('#prompt') },
+    { id: 'negative', label: '负面', ta: $('#negative') },
+    ...S.characters.map((ch, i) => ({ id: `char:${ch.id}`, label: `角色 ${i + 1}`, ta: document.querySelector(`textarea[data-char="${ch.id}"]`) })),
+  ].filter((t) => t.ta),
+  initialTarget: () => lastTagTarget,
+});
 
 // ---------- 通用 UI ----------
 
@@ -286,6 +300,22 @@ function bindControls() {
     });
   }
   for (const ta of document.querySelectorAll('textarea.tag-input')) attachSuggest(ta);
+  $('#tag-open').append(icon('tag', 13), h('span', {}, 'TAG 检索'));
+  $('#tag-open').addEventListener('click', () => tagPanel.toggleOpen());
+  // 记住最后编辑的是哪个输入框，打开 TAG 面板时默认加到那里
+  document.addEventListener('focusin', (e) => {
+    const ta = e.target;
+    if (!ta.matches?.('.controls textarea.tag-input')) return;
+    lastTagTarget = ta.dataset.char ? `char:${ta.dataset.char}` : ta.id || lastTagTarget;
+  });
+  addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k' && app.key) {
+      e.preventDefault();
+      const ta = document.activeElement;
+      const tok = ta?.matches?.('textarea.tag-input') ? tokenAt(ta) : null;
+      tagPanel.open(tok?.word);
+    }
+  });
 
   $('#swap-size').addEventListener('click', () => {
     [S.width, S.height] = [S.height, S.width];
@@ -415,6 +445,7 @@ function renderNSamples() {
 function renderCharacters() {
   const c = caps();
   $('#chars').replaceChildren(...S.characters.map(charCard));
+  tagPanel.refreshTargets();
   const n = S.characters.length;
   const count = $('#char-count');
   count.textContent = n ? `${n}/${c.maxCharacters}` : '';
@@ -427,7 +458,7 @@ function renderCharacters() {
 
 function charCard(ch, i) {
   const prompt = h('textarea', {
-    class: 'tag-input', rows: 2, spellcheck: 'false', value: ch.prompt,
+    class: 'tag-input', rows: 2, spellcheck: 'false', value: ch.prompt, 'data-char': ch.id,
     placeholder: '角色提示词，如 girl, red hair, school uniform',
     oninput: (e) => { ch.prompt = e.target.value; save(); },
   });
@@ -1497,7 +1528,8 @@ function tokenAt(ta) {
   const raw = text.slice(start, pos);
   const lead = raw.match(/^\s*(?:-?[\d.]+::)?[\s{}[\]]*/)[0];
   const word = raw.slice(lead.length);
-  if (word.trim().length < 2 || /::|[{}[\]]/.test(word)) return null;
+  const w = word.trim();
+  if ((w.length < 2 && !CJK.test(w)) || /::|[{}[\]]/.test(word)) return null;
   return { start: start + lead.length, end, word: word.trim() };
 }
 
@@ -1521,36 +1553,42 @@ const requestSuggest = debounce(async (ta) => {
     return;
   }
   const ctl = (sug.ctl = new AbortController());
+  const cn = CJK.test(tok.word);
   try {
-    const res = await api.suggestTags(sug.fallback ? 'nai-diffusion-4-5-full' : S.modelId, tok.word, ctl.signal);
+    let tags;
+    if (cn) {
+      // 输入中文：查本地中英词库，选中后填英文 TAG
+      const res = await api.tagSearch(tok.word, null, 12, ctl.signal);
+      tags = res.items.map((t) => ({ tag: toPrompt(t.name), count: t.count, cn: t.cn, cat: t.cat }));
+    } else {
+      const res = await api.suggestTags(sug.fallback ? 'nai-diffusion-4-5-full' : S.modelId, tok.word, ctl.signal);
+      tags = (res.tags || []).slice(0, 12).map((t) => ({ ...t, cn: tagPanel.cnOf(t.tag) }));
+    }
     if (ctl.signal.aborted || document.activeElement !== ta) return;
-    const tags = (res.tags || []).slice(0, 12);
     if (!tags.length) {
       closeSuggest();
       return;
     }
     Object.assign(sug, { ta, items: tags, index: 0 });
     paintSuggest();
+    if (!cn && tags.some((t) => !t.cn) && (await tagPanel.translate(tags.map((t) => t.tag)))) {
+      if (sug.ta !== ta || sug.items !== tags) return;
+      for (const t of tags) t.cn = tagPanel.cnOf(t.tag);
+      paintSuggest();
+    }
   } catch (e) {
     // 某些模型可能没有补全数据，退回 V4.5 的词库
-    if (e.name !== 'AbortError' && e.status >= 400 && e.status < 500 && !sug.fallback) sug.fallback = true;
-    closeSuggest();
+    if (!cn && e.name !== 'AbortError' && e.status >= 400 && e.status < 500 && !sug.fallback) sug.fallback = true;
+    if (e.name !== 'AbortError') closeSuggest();
   }
 }, 200);
-
-function fmtCount(n) {
-  if (!n) return '';
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
-  return String(n);
-}
 
 function paintSuggest() {
   const el = $('#suggest');
   el.replaceChildren(...sug.items.map((t, i) => h('div', {
     class: `sg-item${i === sug.index ? ' on' : ''}`,
     onmousedown: (e) => { e.preventDefault(); pickSuggest(i); },
-  }, h('span', {}, t.tag), h('span', { class: 'n' }, fmtCount(t.count)))));
+  }, h('span', { class: 'sg-tag' }, t.tag, t.cn ? h('small', {}, t.cn) : null), h('span', { class: 'n' }, fmtCount(t.count)))));
   el.hidden = false;
   const r = sug.ta.getBoundingClientRect();
   el.style.left = `${r.left}px`;
@@ -1707,6 +1745,7 @@ function logout(msg = '') {
   clearInterval(app.pollTimer);
   app.busy?.abort();
   resetUserView();
+  tagPanel.reset();
   showLogin(msg);
 }
 

@@ -9,6 +9,8 @@ from unittest.mock import patch
 OWNER, MEMBER = 'owner10425', 'member-test-key-12345'
 os.environ.update(NAI_TOKEN='pst-synthetic-' + 'x' * 24, PROXY_KEYS=f'me:{OWNER},friend:{MEMBER}', DOMAIN='nai.test')
 os.environ.setdefault('LOG_DIR', tempfile.mkdtemp())
+os.environ.setdefault('TAG_DICT_URL', '')
+os.environ.setdefault('TAG_DICT_FILE', str(Path(tempfile.mkdtemp()) / 'tags.sqlite'))
 import httpx
 from app.control import ControlStore
 from app import main as m
