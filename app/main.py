@@ -172,7 +172,9 @@ async def me(request: Request):
     user = _authenticate(request)
     if user is None:
         return _error(401, "Invalid proxy key")
-    return {"user": user, "is_admin": control.identity(bearer(request))['owner'],
+    identity = control.identity(bearer(request)) or {}
+    # id 不随改名、换 key 变化，网页端用它区分各人的本地历史
+    return {"user": user, "id": identity.get('id'), "is_admin": bool(identity.get('owner')),
             "queue": {"busy": queue._lock.locked(), "waiting": queue.waiting}}
 
 

@@ -248,6 +248,114 @@ export function readPngText(bytes) {
   return out;
 }
 
+// NAI 还会把同一份元数据藏在 alpha 通道最低位（按列读取），tEXt 被网站剥掉后仍能读出来
+export async function readStealthMeta(blob) {
+  const bmp = await createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+  const { width: w, height: hh } = bmp;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = hh;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(bmp, 0, 0);
+  bmp.close?.();
+  const px = ctx.getImageData(0, 0, w, hh).data;
+  const total = w * hh;
+  let i = 0;
+  const bit = () => {
+    const x = Math.floor(i / hh), y = i % hh;
+    i++;
+    return px[(y * w + x) * 4 + 3] & 1;
+  };
+  const read = (n) => {
+    const out = new Uint8Array(n);
+    for (let k = 0; k < n; k++) {
+      let v = 0;
+      for (let b = 0; b < 8; b++) v = (v << 1) | bit();
+      out[k] = v;
+    }
+    return out;
+  };
+  if (total < 15 * 8 + 32) return null;
+  const sig = new TextDecoder('latin1').decode(read(15));
+  if (sig !== 'stealth_pngcomp' && sig !== 'stealth_pnginfo') return null;
+  let bits = 0;
+  for (let b = 0; b < 32; b++) bits = bits * 2 + bit();
+  if (!bits || bits % 8 || bits > total - i) return null;
+  let data = read(bits / 8);
+  if (sig === 'stealth_pngcomp') {
+    const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('gzip'));
+    data = new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+  return JSON.parse(new TextDecoder().decode(data));
+}
+
+// ---------- zip 打包（不压缩，图片本身已经压缩过） ----------
+
+let crcTable;
+function crc32(bytes) {
+  if (!crcTable) {
+    crcTable = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      crcTable[n] = c >>> 0;
+    }
+  }
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = crcTable[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+// files: [{ name, data: Uint8Array, date?: Date }]
+export function zipFiles(files) {
+  const enc = new TextEncoder();
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name);
+    const d = f.date || new Date();
+    const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+    const date = ((Math.max(d.getFullYear(), 1980) - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+    const crc = crc32(f.data);
+    const size = f.data.length;
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true);
+    lh.setUint16(4, 20, true);
+    lh.setUint16(6, 0x0800, true); // 文件名是 UTF-8
+    lh.setUint16(10, time, true);
+    lh.setUint16(12, date, true);
+    lh.setUint32(14, crc, true);
+    lh.setUint32(18, size, true);
+    lh.setUint32(22, size, true);
+    lh.setUint16(26, name.length, true);
+    parts.push(lh, name, f.data);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true);
+    ch.setUint16(4, 20, true);
+    ch.setUint16(6, 20, true);
+    ch.setUint16(8, 0x0800, true);
+    ch.setUint16(12, time, true);
+    ch.setUint16(14, date, true);
+    ch.setUint32(16, crc, true);
+    ch.setUint32(20, size, true);
+    ch.setUint32(24, size, true);
+    ch.setUint16(28, name.length, true);
+    ch.setUint32(42, offset, true);
+    central.push(ch, name);
+    offset += 30 + name.length + size;
+    if (offset > 0xffffffff) throw new Error('选中的图片太多，超过 4GB，请分批下载');
+  }
+  const cdSize = central.reduce((s, x) => s + x.byteLength, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, files.length, true);
+  end.setUint16(10, files.length, true);
+  end.setUint32(12, cdSize, true);
+  end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, end], { type: 'application/zip' });
+}
+
 // ---------- IndexedDB ----------
 
 let dbPromise;
@@ -278,7 +386,6 @@ async function tx(store, mode, fn) {
 export const store = {
   putImage: (rec) => tx('images', 'readwrite', (s) => s.put(rec)),
   deleteImage: (id) => tx('images', 'readwrite', (s) => s.delete(id)),
-  clearImages: () => tx('images', 'readwrite', (s) => s.clear()),
   allImages: async () => {
     const all = await tx('images', 'readonly', (s) => s.getAll());
     return all.sort((a, b) => b.created - a.created);

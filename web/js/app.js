@@ -1,7 +1,8 @@
 import * as N from './nai.js';
 import {
   $, h, icon, blobToB64, bytesToB64, hashString, padForReference, fitDims, resizeToPng, makeThumb,
-  quantizeMask, unzip, isImageBytes, readPngText, store, safeStorage, uid, randomSeed, clamp, debounce,
+  quantizeMask, unzip, isImageBytes, readPngText, readStealthMeta, zipFiles, store, safeStorage, uid, randomSeed, clamp,
+  debounce,
 } from './util.js';
 
 const KEY_STORAGE = 'nai-studio:key';
@@ -42,9 +43,8 @@ const defaults = () => ({
 
 const pick = (obj, keys) => Object.fromEntries(keys.filter((k) => obj && obj[k] !== undefined).map((k) => [k, obj[k]]));
 
-const S = Object.assign(defaults(), pick(safeStorage(STATE_STORAGE) || {}, PERSIST));
-if (!N.MODELS.some((m) => m.id === S.modelId)) S.modelId = defaults().modelId;
-if (!Array.isArray(S.characters)) S.characters = [];
+// 设置按用户分开保存，登录后再读取（见 loadUserState）
+const S = defaults();
 
 const app = {
   key: safeStorage(KEY_STORAGE) || '',
@@ -57,9 +57,14 @@ const app = {
   history: [],
   thumbUrls: new Map(),
   pollTimer: null,
+  user: null, // { id, name, admin }
+  select: null, // 历史多选模式下选中的 id
+  lastPick: -1,
 };
 
-const save = debounce(() => safeStorage(STATE_STORAGE, pick(S, PERSIST)), 300);
+const stateKey = () => `${STATE_STORAGE}:${app.user.id}`;
+const persist = () => app.user && safeStorage(stateKey(), pick(S, PERSIST));
+const save = debounce(persist, 300);
 const model = () => N.modelById(S.modelId);
 const caps = () => N.capsOf(model());
 const cur = () => (app.view ? app.view.items[app.view.index] : null);
@@ -76,7 +81,7 @@ function toast(msg, type = 'info', ms = 3600) {
   }, ms);
 }
 
-function openModal({ title, body, foot, wide = false, onClose }) {
+function openModal({ title, body, foot, wide = false, cls = '', onClose }) {
   const overlay = h('div', { class: 'overlay' });
   const onKey = (e) => e.key === 'Escape' && close();
   function close() {
@@ -85,7 +90,7 @@ function openModal({ title, body, foot, wide = false, onClose }) {
     onClose?.();
   }
   overlay.append(
-    h('div', { class: `modal${wide ? ' wide' : ''}` },
+    h('div', { class: `modal${wide ? ' wide' : ''}${cls ? ` ${cls}` : ''}` },
       h('div', { class: 'modal-head' }, h('span', {}, title), h('button', { class: 'icon-btn', type: 'button', onclick: close }, icon('x'))),
       h('div', { class: 'modal-body' }, body),
       foot ? h('div', { class: 'modal-foot' }, foot) : null),
@@ -213,6 +218,7 @@ function buildStatic() {
   $('#seed-dice').append(icon('dice'));
   $('#seed-clear').append(icon('x', 14));
   $('#hist-clear').append(icon('trash', 15));
+  $('#hist-select').append(icon('check', 15));
 
   for (const ph of document.querySelectorAll('[data-slider]')) {
     const key = ph.dataset.slider;
@@ -297,6 +303,7 @@ function bindControls() {
   $('#busy-cancel').addEventListener('click', () => app.busy?.abort());
   $('#logout').addEventListener('click', () => logout());
   $('#hist-clear').addEventListener('click', clearHistory);
+  $('#hist-select').addEventListener('click', () => setSelecting(!app.select));
   $('#view-img').addEventListener('click', () => $('#viewer').classList.toggle('zoom'));
   $('#login-form').addEventListener('submit', onLogin);
 }
@@ -855,8 +862,10 @@ async function readNaiMeta(blob) {
 const snapshotParams = () => structuredClone(pick(S, PARAM_KEYS));
 
 async function addRecord(blob, info) {
+  const owner = app.user?.id;
   const { thumb, width, height } = await makeThumb(blob);
-  const rec = { id: uid(), created: Date.now(), blob, thumb, width, height, ...info };
+  const rec = { id: uid(), owner, created: Date.now(), blob, thumb, width, height, ...info };
+  if (!owner || owner !== app.user?.id) return rec; // 生成途中换了人，不写进下一个人的历史
   try {
     await store.putImage(rec);
   } catch (e) {
@@ -955,7 +964,8 @@ function paintView() {
     if (items.length > 1) {
       $('#batch').replaceChildren(...items.map((r, i) => h('button', {
         type: 'button', class: i === index ? 'on' : '', onclick: () => { app.view.index = i; paintView(); },
-      }, h('img', { src: thumbUrl(r), alt: '' }))));
+      }, h('img', { src: thumbUrl(r), alt: '' }))),
+      h('button', { type: 'button', class: 'batch-dl', title: `打包下载这 ${items.length} 张`, onclick: () => downloadMany(items) }, icon('download', 18)));
     }
     const p = rec.params;
     const meta = $('#view-meta');
@@ -968,14 +978,49 @@ function paintView() {
   for (const el of $('#history').children) el.classList.toggle('on', el.dataset.id === rec?.id);
 }
 
-function downloadCurrent() {
-  const r = cur();
+function fileName(r, used) {
   const ext = r.blob.type === 'image/webp' ? 'webp' : 'png';
-  const name = `nai-${r.params?.seed ?? r.id}${r.toolId ? `-${r.toolId}` : ''}.${ext}`;
-  const a = h('a', { href: app.viewUrl, download: name });
+  const base = `nai-${r.params?.seed ?? r.id}${r.toolId ? `-${r.toolId}` : ''}`;
+  let name = `${base}.${ext}`;
+  for (let i = 2; used?.has(name); i++) name = `${base}-${i}.${ext}`;
+  used?.add(name);
+  return name;
+}
+
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = h('a', { href: url, download: name });
   document.body.append(a);
   a.click();
   a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+function downloadCurrent() {
+  saveBlob(cur().blob, fileName(cur()));
+}
+
+// 多张打成一个 zip，和官网的批量保存一样，不用一张张点
+async function downloadMany(recs) {
+  if (!recs.length) return;
+  if (recs.length === 1) {
+    saveBlob(recs[0].blob, fileName(recs[0]));
+    return;
+  }
+  try {
+    const used = new Set();
+    const files = [];
+    for (const r of recs) {
+      files.push({ name: fileName(r, used), data: new Uint8Array(await r.blob.arrayBuffer()), date: new Date(r.created || Date.now()) });
+    }
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    saveBlob(zipFiles(files), `nai-${stamp}-${recs.length}.zip`);
+    toast(`已打包 ${recs.length} 张图片`, 'ok');
+  } catch (e) {
+    toast(`打包失败：${e.message}`, 'error');
+  }
 }
 
 async function copyCurrent() {
@@ -1106,8 +1151,8 @@ function useSeedCurrent() {
   toast(`种子已固定为 ${S.seed}`, 'ok');
 }
 
-// 读取 NAI 官网 / 其他工具生成的 PNG 参数
-function importMeta(c) {
+// 把 NAI 官网 / 其他工具写进图片的参数转换成本页的设置
+function parseMeta(c) {
   const p = {};
   const v4 = c.v4_prompt?.caption;
   const v4n = c.v4_negative_prompt?.caption;
@@ -1146,9 +1191,31 @@ function importMeta(c) {
   p.variety = c.skip_cfg_above_sigma != null;
   if (/V5/i.test(c._source) && !model().v5) p.modelId = 'nai-diffusion-5-full';
   else if (/V4\.5/i.test(c._source) && model().v5) p.modelId = 'nai-diffusion-4-5-full';
-  Object.assign(S, p);
-  afterBulkChange();
+  return p;
 }
+
+// 先读 PNG 文本块，没有的话再读 alpha 通道里的隐写信息
+async function readAnyMeta(blob) {
+  const meta = await readNaiMeta(blob);
+  if (meta) return meta;
+  try {
+    const s = await readStealthMeta(blob);
+    const c = typeof s?.Comment === 'string' ? JSON.parse(s.Comment) : s?.Comment;
+    if (c && typeof c === 'object') return { ...c, _source: s.Source || '' };
+  } catch (e) {
+    console.warn(e);
+  }
+  return null;
+}
+
+// [id, 名称, 对应的设置项, 图片里有没有这一项]
+const IMPORT_GROUPS = [
+  ['prompt', '提示词', ['prompt', 'quality'], (p) => p.prompt],
+  ['negative', '负面提示词', ['negative', 'ucPreset'], (p) => p.negative || p.ucPreset !== 'none'],
+  ['characters', '角色', ['characters', 'autoPosition'], (p) => p.characters.length],
+  ['settings', '尺寸和参数', ['modelId', 'width', 'height', 'steps', 'scale', 'cfgRescale', 'sampler', 'noiseSchedule', 'variety'], () => true],
+  ['seed', '种子', ['seed'], (p) => p.seed],
+];
 
 async function handleImported(blob) {
   const rec = app.history.find((r) => r.blob === blob);
@@ -1156,22 +1223,88 @@ async function handleImported(blob) {
     showView([rec]);
     return;
   }
-  const meta = await readNaiMeta(blob);
-  if (meta && (meta.prompt || meta.v4_prompt)) {
-    importMeta(meta);
-    const { width, height } = await makeThumb(blob, 8);
-    showView([{ id: uid(), blob, width, height, params: snapshotParams(), tool: '导入' }]);
-    toast('已从图片读取参数', 'ok');
+  const meta = await readAnyMeta(blob);
+  importDialog(blob, meta && (meta.prompt || meta.v4_prompt) ? meta : null);
+}
+
+function importDialog(blob, meta) {
+  const url = URL.createObjectURL(blob);
+  const p = meta ? parseMeta(meta) : null;
+  const groups = p ? IMPORT_GROUPS.filter((g) => g[3](p)) : [];
+  const picked = new Set(groups.map((g) => g[0]));
+  const info = [];
+  if (p) {
+    const facts = [p.width && p.height ? `${p.width}×${p.height}` : '', p.steps ? `${p.steps} 步` : '',
+      p.scale != null ? `CFG ${p.scale}` : '', p.sampler || '', p.seed ? `seed ${p.seed}` : ''].filter(Boolean);
+    info.push(h('div', { class: 'import-facts mono' }, facts.join(' · ')));
+    if (meta._source) info.push(h('div', { class: 'faint' }, meta._source));
+    const block = (label, text) => text && info.push(h('div', { class: 'import-block' }, h('b', {}, label), h('p', {}, text)));
+    block('提示词', p.prompt);
+    block('负面', p.negative);
+    p.characters.forEach((c, i) => block(`角色 ${i + 1}`, c.prompt));
   } else {
-    setBase(blob);
+    info.push(h('p', { class: 'muted', style: { margin: 0 } }, '这张图里没有找到 NAI 的生成参数（可能被压缩或转存过）。可以把它当作底图或参考图。'));
   }
+  const checks = groups.map(([id, label]) => h('label', { class: 'check' },
+    h('input', { type: 'checkbox', checked: true, onchange: (e) => { if (e.target.checked) picked.add(id); else picked.delete(id); } }),
+    h('span', {}, label)));
+  const act = (fn) => async () => {
+    close();
+    await fn();
+  };
+  const useRef = (tab, label, add) => act(async () => {
+    if (!caps()[tab]) {
+      toast(`当前模型不支持${label}，请先切到 V4.5`, 'error');
+      return;
+    }
+    S.refTab = tab;
+    renderTabs();
+    await add([blob]);
+    save();
+  });
+  const close = openModal({
+    title: p ? '读取图片参数' : '使用这张图片',
+    cls: 'import-modal',
+    body: [
+      h('div', { class: 'import' }, h('img', { class: 'import-img', src: url, alt: '' }), h('div', { class: 'import-info' }, info)),
+      checks.length ? h('div', { class: 'import-checks' }, h('span', { class: 'faint' }, '导入：'), checks) : null,
+    ],
+    foot: [
+      h('button', { class: 'btn ghost', type: 'button', onclick: act(() => setBase(blob)) }, '设为底图'),
+      h('button', { class: 'btn ghost', type: 'button', onclick: useRef('charRef', '角色参考', addCharRef) }, '角色参考'),
+      h('button', { class: 'btn ghost', type: 'button', onclick: useRef('vibe', '氛围迁移', addVibes) }, '氛围参考'),
+      p ? h('button', {
+        class: 'btn primary', type: 'button',
+        onclick: act(async () => {
+          const keys = groups.filter((g) => picked.has(g[0])).flatMap((g) => g[2]);
+          if (!keys.length) return;
+          Object.assign(S, structuredClone(pick(p, keys)));
+          afterBulkChange();
+          const { width, height } = await makeThumb(blob, 8);
+          showView([{ id: uid(), blob, width, height, params: snapshotParams(), tool: '导入' }]);
+          toast('已导入所选参数', 'ok');
+        }),
+      }, '导入参数') : null,
+    ],
+    onClose: () => setTimeout(() => URL.revokeObjectURL(url), 1000),
+  });
 }
 
 // ---------- 历史 ----------
 
 async function loadHistory() {
+  const user = app.user;
   try {
-    app.history = await store.allImages();
+    const all = await store.allImages();
+    if (user !== app.user) return;
+    // 旧版本的历史没有记录归属，只交给管理员，其他人看不到
+    if (user.admin) {
+      for (const r of all.filter((x) => !x.owner)) {
+        r.owner = user.id;
+        await store.putImage(r).catch(() => {});
+      }
+    }
+    app.history = all.filter((r) => r.owner === user.id);
   } catch (e) {
     console.warn(e);
     app.history = [];
@@ -1183,12 +1316,16 @@ async function loadHistory() {
 
 function renderHistory() {
   const grid = $('#history');
-  grid.replaceChildren(...app.history.slice(0, 600).map((rec) => {
+  grid.replaceChildren(...app.history.slice(0, 600).map((rec, idx) => {
     const el = h('div', {
-      class: `hist-item${cur()?.id === rec.id ? ' on' : ''}`,
+      class: `hist-item${cur()?.id === rec.id ? ' on' : ''}${app.select?.has(rec.id) ? ' sel' : ''}`,
       draggable: 'true',
       title: rec.params?.prompt?.slice(0, 200) || '',
-      onclick: () => {
+      onclick: (e) => {
+        if (app.select) {
+          pickRecord(idx, e.shiftKey);
+          return;
+        }
         const i = app.view?.items.indexOf(rec) ?? -1;
         if (i >= 0) {
           app.view.index = i;
@@ -1198,6 +1335,7 @@ function renderHistory() {
     },
     h('img', { src: thumbUrl(rec), alt: '', loading: 'lazy', draggable: 'false' }),
     rec.tool ? h('span', { class: 'tag' }, rec.tool) : null,
+    h('span', { class: 'chk' }, icon('check', 13)),
     h('button', { class: 'del', type: 'button', title: '删除', onclick: (e) => { e.stopPropagation(); deleteRecord(rec); } }, icon('x', 12)));
     el.dataset.id = rec.id;
     el.addEventListener('dragstart', (e) => {
@@ -1208,29 +1346,79 @@ function renderHistory() {
   }));
   $('#hist-count').textContent = app.history.length || '';
   $('#hist-empty').hidden = app.history.length > 0;
+  renderHistBar();
 }
 
-async function deleteRecord(rec) {
-  await store.deleteImage(rec.id).catch(() => {});
-  app.history = app.history.filter((r) => r !== rec);
-  const u = app.thumbUrls.get(rec.id);
-  if (u) URL.revokeObjectURL(u);
-  app.thumbUrls.delete(rec.id);
-  if (app.view?.items.includes(rec)) {
-    const items = app.view.items.filter((r) => r !== rec);
-    showView(items, Math.min(app.view.index, items.length - 1));
+// ---------- 历史多选：批量下载 / 删除 ----------
+
+function setSelecting(on) {
+  app.select = on ? new Set() : null;
+  app.lastPick = -1;
+  renderHistory();
+}
+
+function pickRecord(idx, range) {
+  const ids = app.history.map((r) => r.id);
+  if (range && app.lastPick >= 0) {
+    const [a, b] = [Math.min(app.lastPick, idx), Math.max(app.lastPick, idx)];
+    for (let i = a; i <= b; i++) app.select.add(ids[i]);
+  } else if (app.select.has(ids[idx])) app.select.delete(ids[idx]);
+  else app.select.add(ids[idx]);
+  app.lastPick = idx;
+  for (const el of $('#history').children) el.classList.toggle('sel', app.select.has(el.dataset.id));
+  renderHistBar();
+}
+
+function renderHistBar() {
+  const bar = $('#hist-bar');
+  $('.history').classList.toggle('selecting', !!app.select);
+  $('#hist-select').classList.toggle('on', !!app.select);
+  bar.hidden = !app.select;
+  if (!app.select) return;
+  const n = app.select.size;
+  const all = n > 0 && n === app.history.length;
+  const chosen = () => app.history.filter((r) => app.select.has(r.id));
+  bar.replaceChildren(
+    h('div', { class: 'hist-bar-top' },
+      h('span', {}, `已选 ${n} / ${app.history.length}`),
+      h('button', {
+        class: 'text-btn', type: 'button',
+        onclick: () => { app.select = all ? new Set() : new Set(app.history.map((r) => r.id)); renderHistory(); },
+      }, all ? '全不选' : '全选')),
+    h('div', { class: 'hist-bar-btns' },
+      h('button', { class: 'btn primary small', type: 'button', disabled: !n, onclick: () => downloadMany(chosen()) }, icon('download', 14), h('span', {}, '下载')),
+      h('button', { class: 'btn ghost small', type: 'button', title: '删除选中', disabled: !n, onclick: () => deleteRecords(chosen()) }, icon('trash', 14)),
+      h('button', { class: 'btn ghost small', type: 'button', onclick: () => setSelecting(false) }, '完成')),
+  );
+}
+
+async function forgetRecords(recs) {
+  const gone = new Set(recs);
+  for (const r of recs) {
+    await store.deleteImage(r.id).catch(() => {});
+    const u = app.thumbUrls.get(r.id);
+    if (u) URL.revokeObjectURL(u);
+    app.thumbUrls.delete(r.id);
+    app.select?.delete(r.id);
+  }
+  app.history = app.history.filter((r) => !gone.has(r));
+  if (app.view?.items.some((r) => gone.has(r))) {
+    const items = app.view.items.filter((r) => !gone.has(r));
+    showView(items, Math.max(0, Math.min(app.view.index, items.length - 1)));
   }
   renderHistory();
 }
 
+const deleteRecord = (rec) => forgetRecords([rec]);
+
+async function deleteRecords(recs) {
+  if (!recs.length || !(await confirmDialog(`删除选中的 ${recs.length} 张图片？只影响本浏览器。`, '删除'))) return;
+  await forgetRecords(recs);
+}
+
 async function clearHistory() {
-  if (!app.history.length || !(await confirmDialog(`删除全部 ${app.history.length} 张历史图片？只影响本浏览器。`, '全部删除'))) return;
-  await store.clearImages().catch(() => {});
-  for (const u of app.thumbUrls.values()) URL.revokeObjectURL(u);
-  app.thumbUrls.clear();
-  app.history = [];
-  showView([]);
-  renderHistory();
+  if (!app.history.length || !(await confirmDialog(`删除你的全部 ${app.history.length} 张历史图片？只影响本浏览器。`, '全部删除'))) return;
+  await forgetRecords([...app.history]);
 }
 
 function navigate(delta) {
@@ -1408,9 +1596,42 @@ async function pollQueue() {
   paintBusyText();
 }
 
+// 读取当前用户自己的设置；旧版本所有人共用一份，只迁移给管理员
+function loadUserState() {
+  let saved = safeStorage(stateKey());
+  const legacy = safeStorage(STATE_STORAGE);
+  if (legacy && app.user.admin) {
+    saved ||= legacy;
+    safeStorage(STATE_STORAGE, null);
+  }
+  Object.assign(S, defaults(), pick(saved || {}, PERSIST));
+  if (!N.MODELS.some((m) => m.id === S.modelId)) S.modelId = defaults().modelId;
+  if (!Array.isArray(S.characters)) S.characters = [];
+  for (const c of S.characters) c.id ||= uid();
+  renderAll();
+  persist();
+}
+
+// 退出或换人时清掉上一个人的界面，避免看到别人的图和提示词
+function resetUserView() {
+  app.select = null;
+  for (const u of app.thumbUrls.values()) URL.revokeObjectURL(u);
+  app.thumbUrls.clear();
+  app.history = [];
+  showView([]);
+  renderHistory();
+  Object.assign(S, defaults());
+  renderAll();
+  for (const id of ['#user-name', '#user-avatar']) $(id).textContent = '';
+  $('#manage-link').hidden = true;
+}
+
 async function enter() {
   const me = await api.me();
   safeStorage(KEY_STORAGE, app.key);
+  resetUserView();
+  app.user = { id: me.id || me.user, name: me.user, admin: !!me.is_admin };
+  loadUserState();
   $('#login').hidden = true;
   $('#user-name').textContent = me.user;
   $('#manage-link').hidden = !me.is_admin;
@@ -1430,9 +1651,13 @@ function showLogin(err = '') {
 }
 
 function logout(msg = '') {
+  persist();
   safeStorage(KEY_STORAGE, null);
   app.key = '';
+  app.user = null;
   clearInterval(app.pollTimer);
+  app.busy?.abort();
+  resetUserView();
   showLogin(msg);
 }
 
@@ -1489,7 +1714,7 @@ function setupGlobal() {
     if (!$('#menu').hidden && !$('#menu').contains(e.target)) closeMenu();
   });
   addEventListener('resize', () => { closeMenu(); closeSuggest(); });
-  addEventListener('pagehide', () => safeStorage(STATE_STORAGE, pick(S, PERSIST)));
+  addEventListener('pagehide', persist);
   $('.controls-scroll').addEventListener('scroll', closeSuggest);
   addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
@@ -1500,6 +1725,7 @@ function setupGlobal() {
     if (e.key === 'Escape') {
       closeMenu();
       $('#viewer').classList.remove('zoom');
+      if (app.select && !modalOpen()) setSelecting(false);
     }
     if (inEditable(e.target) || modalOpen()) return;
     if (e.key === 'ArrowLeft') navigate(-1);

@@ -177,6 +177,12 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.calls[-1].headers['authorization'], 'Bearer ' + token)
         self.assertFalse(m.queue._lock.locked())
 
+    async def test_me_reports_stable_id(self):
+        auth = {'Authorization': 'Bearer ' + MEMBER}
+        me = (await self.client.get('/proxy/me', headers=auth)).json()
+        self.assertEqual(me['id'], m.control.identity(MEMBER)['id'])
+        self.assertFalse(me['is_admin'])
+        self.assertEqual((await self.client.get('/proxy/me')).status_code, 401)
 
 if __name__ == '__main__':
     unittest.main()

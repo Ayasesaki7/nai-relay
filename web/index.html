@@ -150,7 +150,7 @@
           <svg class="logo" viewBox="0 0 32 32" width="56" height="56"><use href="#logo"/></svg>
           <h2>开始创作</h2>
           <p>写好提示词后点击生成，或按 <kbd>Ctrl</kbd> + <kbd>Enter</kbd></p>
-          <p class="faint">把 NAI 生成的 PNG 拖进来可以读取参数，其他图片会设为底图</p>
+          <p class="faint">把图片拖进来或粘贴，可以读取 NAI 参数，或设为底图 / 参考图</p>
         </div>
         <img id="view-img" alt="" hidden>
         <div class="busy" id="busy" hidden>
@@ -159,7 +159,7 @@
           <div class="mono faint" id="busy-time">0.0s</div>
           <button class="btn ghost small" id="busy-cancel" type="button">取消</button>
         </div>
-        <div class="drop-hint" id="drop-hint" hidden><div>松开读取参数 / 设为底图</div></div>
+        <div class="drop-hint" id="drop-hint" hidden><div>松开读取这张图片</div></div>
       </div>
       <div class="batch" id="batch" hidden></div>
       <div class="toolbar" id="toolbar">
@@ -171,8 +171,12 @@
     <aside class="panel history">
       <div class="hist-head">
         <span>历史 <span class="count" id="hist-count"></span></span>
-        <button class="icon-btn" id="hist-clear" type="button" title="清空历史"></button>
+        <div class="hist-actions">
+          <button class="icon-btn" id="hist-select" type="button" title="多选：批量下载 / 删除"></button>
+          <button class="icon-btn" id="hist-clear" type="button" title="清空我的历史"></button>
+        </div>
       </div>
+      <div class="hist-bar" id="hist-bar" hidden></div>
       <div class="hist-grid" id="history"></div>
       <div class="hist-empty faint" id="hist-empty">生成的图片会保存在这个浏览器里</div>
     </aside>
