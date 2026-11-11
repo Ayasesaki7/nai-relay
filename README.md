@@ -32,9 +32,13 @@ docker compose logs -f nai-proxy     # 看到 startup 那行、没有报错就�
 
 浏览器打开 `https://你的域名/`，用 `PROXY_KEYS` 里某个用户名后面的 key 登录。
 
-加人或换 key：改 `PROXY_KEYS`（`openssl rand -hex 24` 生成，前面加 `sk-`），然后 `docker compose up -d`。
+管理入口：`https://你的域名/manage`。首次启动时，`me` 的中转 Key 为管理 Key（没有 `me` 时使用第一条），其余用户为普通用户；用管理 Key 登录生图页后也会显示“管理”链接。
 
-**NAI Token**：官网 → Account Settings → Get Persistent API Token，`pst-` 开头。它能操作你的账号，只放在服务器的 `.env` 里，不要提交到 Git，也不要发给其他用户。
+面板支持验证并更换官方 PST、查询官方额度，以及创建、改名、复制、停用/启用、轮换和删除普通用户的中转 Key。新 Key 默认自动生成，也可填写至少 10 位的自定义 Key。管理 Key 保留，不能在面板中停用、删除或轮换。
+
+首次启动从 `.env` 初始化，之后以 `data/control.json` 为准，修改立即生效，重启后保留。请持久化整个 `data/` 目录并保密备份；不要把它提交 Git。官方 PST 不会回显，只有管理员显式查看用户 Key 时才返回完整中转 Key。旧版升级请给容器增加 `./data:/app/data` 挂载。
+
+**NAI Token**：官网 → Account Settings → Get Persistent API Token，`pst-` 开头。它能操作你的账号，只放在服务器的私密配置中，不要提交到 Git，也不要发给其他用户。
 
 ### 如果服务器上已经有 nginx
 

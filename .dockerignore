@@ -1,5 +1,6 @@
 .venv
 logs
+data
 dist
 .env
 .git

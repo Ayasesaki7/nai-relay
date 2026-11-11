@@ -5,6 +5,7 @@ services:
     env_file: .env
     volumes:
       - ./logs:/app/logs
+      - ./data:/app/data
     expose:
       - "8000"
 

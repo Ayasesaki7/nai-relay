@@ -1,6 +1,6 @@
 import asyncio
-import hmac
 import json
+import os
 import random
 import time
 from contextlib import asynccontextmanager
@@ -14,6 +14,8 @@ from starlette.responses import FileResponse, JSONResponse, Response, StreamingR
 
 from . import config
 from . import logger as log
+from .control import ControlStore
+from .management import bearer, create_router
 
 IMAGE = config.IMAGE_UPSTREAM
 API = config.API_UPSTREAM
@@ -82,12 +84,14 @@ class ClosingStreamingResponse(StreamingResponse):
 
 
 queue = GenQueue()
+control = ControlStore(os.environ.get('CONTROL_FILE', '/app/data/control.json'), config.NAI_TOKEN, config.PROXY_KEYS)
 client: httpx.AsyncClient
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global client
+    control.load()
     log.setup()
     client = httpx.AsyncClient(
         timeout=httpx.Timeout(config.UPSTREAM_TIMEOUT, connect=15),
@@ -103,6 +107,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 # 有些第三方工具是网页版，需要 CORS；鉴权靠 key，所以 origin 放开没问题
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.include_router(create_router(control, lambda: client,
+                                lambda: {'busy': queue._lock.locked(), 'waiting': queue.waiting}))
 
 
 def _error(status: int, message: str) -> JSONResponse:
@@ -119,15 +125,8 @@ def _client_ip(request: Request) -> str:
 
 
 def _authenticate(request: Request) -> str | None:
-    auth = request.headers.get("authorization", "").strip()
-    token = auth[7:].strip() if auth[:7].lower() == "bearer " else auth
-    if not token:
-        return None
-    user = None
-    for key, name in config.PROXY_KEYS.items():
-        if hmac.compare_digest(key.encode(), token.encode()):
-            user = name
-    return user
+    identity = control.identity(bearer(request))
+    return identity['name'] if identity else None
 
 
 def _summarize(body: bytes, content_type: str) -> dict:
@@ -173,7 +172,8 @@ async def me(request: Request):
     user = _authenticate(request)
     if user is None:
         return _error(401, "Invalid proxy key")
-    return {"user": user, "queue": {"busy": queue._lock.locked(), "waiting": queue.waiting}}
+    return {"user": user, "is_admin": control.identity(bearer(request))['owner'],
+            "queue": {"busy": queue._lock.locked(), "waiting": queue.waiting}}
 
 
 # 自带的网页前端；必须注册在下面的通配路由之前
@@ -185,6 +185,13 @@ async def index():
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
 
+@app.get('/manage', include_in_schema=False)
+async def manage_page():
+    return FileResponse(WEB_DIR / 'manage.html', headers={'Cache-Control': 'no-store',
+        'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer',
+        'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"})
+
+
 @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def proxy(request: Request, full_path: str):
     t0 = time.monotonic()
@@ -192,7 +199,8 @@ async def proxy(request: Request, full_path: str):
     path = "/" + full_path
     ip = _client_ip(request)
 
-    user = _authenticate(request)
+    identity = control.identity(bearer(request))
+    user = identity['name'] if identity else None
     if user is None:
         log.event(evt="auth_fail", ip=ip, method=method, path=path)
         return _error(401, "Invalid proxy key")
@@ -213,7 +221,6 @@ async def proxy(request: Request, full_path: str):
 
     # 不转发客户端的任何原始请求头（IP、UA、Cookie 等），全部重新构造
     headers = {
-        "Authorization": f"Bearer {config.NAI_TOKEN}",
         "User-Agent": config.USER_AGENT,
         "Accept": request.headers.get("accept", "*/*"),
     }
@@ -241,6 +248,12 @@ async def proxy(request: Request, full_path: str):
         if held:
             held = False
             queue.release()
+
+    current = control.identity(bearer(request))
+    if current is None or current['id'] != identity['id']:
+        release()
+        return _error(401, 'Invalid proxy key')
+    headers['Authorization'] = 'Bearer ' + control.upstream_token
 
     url = upstream + path + (f"?{request.url.query}" if request.url.query else "")
     try:

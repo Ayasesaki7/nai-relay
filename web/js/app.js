@@ -1413,6 +1413,7 @@ async function enter() {
   safeStorage(KEY_STORAGE, app.key);
   $('#login').hidden = true;
   $('#user-name').textContent = me.user;
+  $('#manage-link').hidden = !me.is_admin;
   $('#user-avatar').textContent = me.user.slice(0, 1);
   app.queue = me.queue;
   pollQueue();

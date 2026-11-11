@@ -19,8 +19,8 @@ def _parse_keys(raw: str) -> dict[str, str]:
         name, key = name.strip(), key.strip()
         if not sep or not name or not key:
             raise RuntimeError(f"PROXY_KEYS 格式错误: {item!r}，应为 name:key")
-        if len(key) < 16:
-            raise RuntimeError(f"用户 {name} 的 key 太短，至少 16 位")
+        if len(key) < 10:
+            raise RuntimeError(f"用户 {name} 的 key 太短，至少 10 位")
         keys[key] = name
     if not keys:
         raise RuntimeError("PROXY_KEYS 里至少要配置一个用户")
