@@ -251,6 +251,10 @@ function buildStatic() {
     const [ic, label, fn, needParams] = t;
     const b = h('button', { class: 'btn', type: 'button', title: label, onclick: (e) => cur() && fn(e) }, icon(ic, 15), h('span', {}, label));
     if (needParams) b.dataset.needParams = '1';
+    if (ic === 'upscale' || ic === 'wand') {
+      b.dataset.cost = ic;
+      b.append(h('small', { class: 'tool-cost' }));
+    }
     $('#tools').append(b);
   }
 }
@@ -923,7 +927,7 @@ function updateCost() {
   if (est.kind === 'free') el.textContent = extra ? `免费 + ${extra}` : '免费';
   else if (est.kind === 'allowance') el.textContent = extra ? `额度 + ${extra}` : 'V5 额度';
   else el.textContent = `≈ ${est.base + extra} Anlas`;
-  el.title = '估算值，以 NAI 实际扣费为准';
+  el.title = `${est.discount && S.nSamples > 1 ? `Opus 免掉其中 1 张，其余每张 ${est.per} Anlas。` : ''}${COST_NOTE}`;
 }
 
 // ---------- 查看器与工具 ----------
@@ -976,6 +980,49 @@ function paintView() {
   }
   for (const b of $('#tools').querySelectorAll('button')) b.disabled = !rec || (b.dataset.needParams && !rec.params);
   for (const el of $('#history').children) el.classList.toggle('on', el.dataset.id === rec?.id);
+  paintToolCosts();
+}
+
+const COST_NOTE = '按 NAI 官网的计价公式估算，以实际扣费为准';
+const costText = (c) => (c == null ? '不支持' : c === 0 ? '免费' : `${c} Anlas`);
+
+function upscaleScale(r) {
+  const side = Math.max(r.width, r.height);
+  const scale = side * 4 <= 4096 ? 4 : 2;
+  return side * scale > 4096 ? 0 : scale;
+}
+
+function toolCosts(r) {
+  if (!r || !app.sub) return null;
+  return {
+    upscale: upscaleScale(r) ? N.upscaleCost(r.width, r.height) : null,
+    director: Object.fromEntries(N.DIRECTOR_TOOLS.map((t) => [t.id, N.directorCost(t.id, r.width, r.height, app.sub)])),
+  };
+}
+
+function paintToolCosts() {
+  const costs = toolCosts(cur());
+  for (const b of $('#tools').querySelectorAll('[data-cost]')) {
+    const tag = b.querySelector('.tool-cost');
+    const label = b.querySelector('span:not(.icon)').textContent;
+    if (!costs) {
+      tag.textContent = '';
+      b.title = label;
+      continue;
+    }
+    if (b.dataset.cost === 'upscale') {
+      tag.textContent = costText(costs.upscale);
+      b.title = `${label}：${costText(costs.upscale)}（${COST_NOTE}）`;
+    } else {
+      // 菜单里每项各自标价，按钮上显示区间
+      const vals = Object.values(costs.director).filter((c) => c != null);
+      const lo = Math.min(...vals);
+      const hi = Math.max(...vals);
+      tag.textContent = !vals.length ? '不支持' : lo === hi ? costText(lo) : `${lo === 0 ? '免费' : lo}–${hi} Anlas`;
+      b.title = `${label}：各工具价格见菜单（${COST_NOTE}）`;
+    }
+    tag.classList.toggle('free', tag.textContent === '免费');
+  }
 }
 
 function fileName(r, used) {
@@ -1040,9 +1087,8 @@ async function toolResult(r, blobs, tool, toolId) {
 
 async function upscaleCurrent() {
   const r = cur();
-  const side = Math.max(r.width, r.height);
-  const scale = side * 4 <= 4096 ? 4 : 2;
-  if (side * scale > 4096) {
+  const scale = upscaleScale(r);
+  if (!scale) {
     toast('图片已经很大了，不能再放大', 'error');
     return;
   }
@@ -1077,8 +1123,10 @@ function closeMenu() {
 }
 
 function openDirectorMenu(anchor) {
+  const costs = toolCosts(cur());
   openMenu(anchor, N.DIRECTOR_TOOLS.map((t) => ({
     label: t.label,
+    hint: costs ? costText(costs.director[t.id]) : '',
     run: () => (t.emotion ? emotionDialog(t) : t.prompt ? colorizeDialog(t) : runDirector(t)),
   })));
 }
@@ -1580,6 +1628,7 @@ async function refreshSub() {
     $('#stat-usage .battery').classList.toggle('low', pct < 10);
   }
   updateCost();
+  paintToolCosts();
 }
 
 async function pollQueue() {

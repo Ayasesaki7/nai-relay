@@ -772,6 +772,19 @@ input[type="range"]:focus { box-shadow: none; }
 .tools .btn { height: 32px; padding: 0 10px; background: transparent; border-color: transparent; color: var(--muted); font-size: 12px; }
 .tools .btn:hover { background: var(--panel-3); color: var(--text); }
 .tools .sep { width: 1px; background: var(--line-2); margin: 6px 4px; }
+.tool-cost {
+  margin-left: 2px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--panel-3);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.tool-cost:empty { display: none; }
+.tool-cost.free { color: var(--ok, #5fd39a); }
+.tools .btn:disabled .tool-cost { display: none; }
 
 /* ---------- 历史 ---------- */
 

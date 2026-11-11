@@ -219,24 +219,65 @@ export function buildGenerateBody(s, { seed, vibes = [] }) {
 // 价格公式取自官网前端（经 NAIWeaver 移植），不保证与实际扣费完全一致
 // Opus 免费：单张、无底图、≤1024×1024、≤28 步；V5 改为消耗额度电池
 // 角色参考每张 +5（Opus 也收），Vibe 超过 4 张后每张 +2
+// ---------- 点数估算 ----------
+// 公式照搬 NAI 官方前端（2026-11 的 novelai.net/image 打包代码），结果仍以实际扣费为准
+
+const stepCost = (area, steps) => Math.ceil(2.951823174884865e-6 * area + 5.753298233447344e-7 * area * steps);
+const opusActive = (sub) => !!(sub?.isOpus && sub.active);
+// V5 的免费张数走额度，额度用完（isNegative）就不再免费
+const v5AllowanceOut = (sub) => !!sub?.usage?.isNegative;
+
 export function estimateCost(s, sub) {
   const model = modelById(s.modelId);
   const caps = capsOf(model);
   const n = s.nSamples;
   const area = s.width * s.height;
-  const strength = s.base ? s.base.strength : 1;
-  const per = Math.max(Math.ceil(Math.ceil(2.951823174884865e-6 * area + 5.753298233447344e-7 * area * s.steps) * strength), 2);
+  const strength = s.base && !s.base.mask ? s.base.strength : 1;
+  let per = stepCost(area, s.steps);
+  if (model.v5) per *= 1.5;
+  per = Math.max(Math.ceil(per * strength), 2);
   const refs = caps.charRef ? s.charRefs.length : 0;
   const vibes = caps.vibe && !refs ? s.vibes.length : 0;
-  const extra = (refs * 5 + Math.max(0, vibes - 4) * 2) * n;
+  const extra = refs * 5 * n + Math.max(0, vibes - 4) * 2;
+  // Opus：1MP 以内、28 步以内、不带角色参考时，每批免掉一张
+  const discount = opusActive(sub) && !refs && area <= FREE_PIXELS && s.steps <= 28 && !(model.v5 && v5AllowanceOut(sub));
+  const paid = discount ? n - 1 : n;
+  const base = per * paid;
   let kind = 'anlas';
-  let base = per * n;
-  if (sub?.isOpus && !s.base && n === 1 && area <= FREE_PIXELS && s.steps <= 28) {
-    if (!model.v5) kind = 'free';
-    else if (!sub.usage || (!sub.usage.isNegative && sub.usage.percent > 0)) kind = 'allowance';
-    if (kind !== 'anlas') base = 0;
+  if (discount && paid === 0) kind = model.v5 ? 'allowance' : 'free';
+  return { kind, base, extra, total: base + extra, per, discount };
+}
+
+const UPSCALE_TIERS = [[1048576, 1], [1747627, 2], [2446678, 3], [3145728, 4]];
+
+/** 放大：只看原图像素数，不分会员等级；超出范围返回 null */
+export function upscaleCost(w, h) {
+  const area = w * h;
+  for (const [limit, price] of UPSCALE_TIERS) if (area > 0 && area <= limit) return price;
+  return null;
+}
+
+/**
+ * 导演工具：按 V3 在 28 步的价格算。图先缩到 3MP 以内、再放到 1MP 左右；
+ * Opus 在 1MP 以内免费，但去除背景一律收费（3 倍 + 5）。超出返回 null
+ */
+export function directorCost(tool, w, h, sub) {
+  let area = w * h;
+  if (!area) return null;
+  if (area > MAX_PIXELS) {
+    const k = Math.sqrt(MAX_PIXELS / area);
+    [w, h] = [Math.floor(w * k), Math.floor(h * k)];
+    area = w * h;
   }
-  return { kind, base, extra, total: base + extra };
+  if (area < FREE_PIXELS) {
+    const k = Math.sqrt(FREE_PIXELS / area);
+    [w, h] = [Math.floor(w * k), Math.floor(h * k)];
+    area = w * h;
+  }
+  const per = Math.max(stepCost(area, 28), 2);
+  if (per > 140) return null;
+  if (tool === 'bg-removal') return per * 3 + 5;
+  return opusActive(sub) && area <= FREE_PIXELS ? 0 : per;
 }
 
 export const QUALITY_SUFFIXES = [
