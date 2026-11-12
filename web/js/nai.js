@@ -297,12 +297,13 @@ export class ApiError extends Error {
 }
 
 export function createApi(getKey, onUnauthorized) {
-  async function request(method, path, { json, signal, binary = false } = {}) {
+  async function request(method, path, { json, body, signal, binary = false, blob = false } = {}) {
     const headers = { Authorization: `Bearer ${getKey()}` };
     if (json !== undefined) headers['Content-Type'] = 'application/json';
+    if (body !== undefined) headers['Content-Type'] = 'application/octet-stream';
     let res;
     try {
-      res = await fetch(path, { method, headers, body: json !== undefined ? JSON.stringify(json) : undefined, signal });
+      res = await fetch(path, { method, headers, body: json !== undefined ? JSON.stringify(json) : body, signal });
     } catch (e) {
       if (e.name === 'AbortError') throw e;
       throw new ApiError(0, '网络错误，连不上中转服务');
@@ -317,6 +318,7 @@ export function createApi(getKey, onUnauthorized) {
       if (res.status === 401 && msg === 'Invalid proxy key') onUnauthorized();
       throw new ApiError(res.status, explain(res.status, msg), j);
     }
+    if (blob) return res.blob();
     return binary ? new Uint8Array(await res.arrayBuffer()) : res.json();
   }
   return {
@@ -334,6 +336,21 @@ export function createApi(getKey, onUnauthorized) {
     tagDetail: (name) => request('GET', `/proxy/tags/detail?name=${encodeURIComponent(name)}`),
     userdataGet: (kind) => request('GET', `/proxy/userdata/${kind}`),
     userdataPut: (kind, rev, data) => request('PUT', `/proxy/userdata/${kind}`, { json: { rev, data } }),
+    galleryList: () => request('GET', '/proxy/gallery'),
+    // 二进制格式：4 字节长度 + meta JSON，4 字节长度 + 缩略图，剩下是原图
+    galleryAdd: async (meta, thumb, image, signal) => {
+      const mb = new TextEncoder().encode(JSON.stringify(meta));
+      const head = new DataView(new ArrayBuffer(4));
+      head.setUint32(0, mb.length);
+      const th = new DataView(new ArrayBuffer(4));
+      th.setUint32(0, thumb.size);
+      return request('POST', '/proxy/gallery/items', { body: new Blob([head, mb, th, thumb, image]), signal });
+    },
+    galleryFile: (id, thumb, signal) => request('GET', `/proxy/gallery/items/${id}/${thumb ? 'thumb' : 'image'}`, { blob: true, signal }),
+    galleryBatch: (op, ids, album) => request('POST', '/proxy/gallery/batch', { json: { op, ids, album } }),
+    galleryAlbum: (op, id, name) => (op === 'create' ? request('POST', '/proxy/gallery/albums', { json: { name } })
+      : op === 'rename' ? request('PATCH', `/proxy/gallery/albums/${id}`, { json: { name } })
+        : request('DELETE', `/proxy/gallery/albums/${id}`)),
   };
 }
 
@@ -342,6 +359,7 @@ function explain(status, msg) {
   if (status === 402) return `Anlas 不足或订阅无效：${msg}`;
   if (status === 429) return `NAI 限流（可能有人在官网同时生成）：${msg}`;
   if (status === 503) return '排队超时，前面的生成还没结束';
+  if (status === 413 || status === 507) return msg;
   return `${status} ${msg}`;
 }
 

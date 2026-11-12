@@ -2,6 +2,7 @@ import * as N from './nai.js';
 import { createTagPanel, CJK, toPrompt, fmtCount } from './tags.js';
 import { createTagBoard, resolvePrompt, history, resetHistories } from './prompt.js';
 import { createLibrary } from './library.js';
+import { createGallery } from './gallery.js';
 import {
   $, h, icon, blobToB64, bytesToB64, hashString, padForReference, fitDims, resizeToPng, makeThumb,
   quantizeMask, unzip, isImageBytes, readPngText, readStealthMeta, zipFiles, store, safeStorage, uid, randomSeed, clamp,
@@ -102,6 +103,18 @@ const library = createLibrary({
   applyPromptState: (d) => applyPromptState(d),
 });
 const SNAPSHOT_KEYS = ['prompt', 'negative', 'characters', 'quality', 'ucPreset', 'autoPosition'];
+const gallery = createGallery({
+  api,
+  toast: (...a) => toast(...a),
+  openModal: (...a) => openModal(...a),
+  confirmDialog: (...a) => confirmDialog(...a),
+  openMenu: (...a) => openMenu(...a),
+  makeThumb: (b) => makeThumb(b),
+  showRecords: (recs) => showView(recs, 0),
+  restoreParams: (rec) => importDialog(rec.blob, null, { params: rec.params, rec }),
+  downloadMany: (recs) => downloadMany(recs),
+  onChange: () => paintStar(),
+});
 
 /** 程序改提示词输入框：记进撤销栈，然后触发 input 让设置和标签视图跟着更新 */
 function editPrompt(ta, value) {
@@ -334,6 +347,7 @@ function buildStatic() {
   const tools = [
     ['download', '下载', downloadCurrent],
     ['copy', '复制', copyCurrent],
+    ['star', '收藏', (e) => gallery.starMenu(cur(), e.currentTarget)],
     'sep',
     ['image', '设为底图', () => setBase(cur().blob)],
     ['brush', '局部重绘', () => setBase(cur().blob, true)],
@@ -351,6 +365,7 @@ function buildStatic() {
     const [ic, label, fn, needParams] = t;
     const b = h('button', { class: 'btn', type: 'button', title: label, onclick: (e) => cur() && fn(e) }, icon(ic, 15), h('span', {}, label));
     if (needParams) b.dataset.needParams = '1';
+    if (ic === 'star') b.id = 'star-btn';
     if (ic === 'upscale' || ic === 'wand') {
       b.dataset.cost = ic;
       b.append(h('small', { class: 'tool-cost' }));
@@ -395,6 +410,8 @@ function bindControls() {
   $('#lib-open').addEventListener('click', () => library.open('fav'));
   $('#snap-open').append(icon('camera', 13), h('span', {}, '快照'));
   $('#snap-open').addEventListener('click', () => library.open('snap'));
+  $('#gallery-open').append(icon('cloud', 14), h('span', {}, '图库'));
+  $('#gallery-open').addEventListener('click', () => gallery.open());
   for (const b of $('#mode-toggle').children) b.addEventListener('click', () => setTagMode(b.dataset.mode === 'tag'));
   setTagMode(!!safeStorage(TAGMODE_STORAGE));
   $('#prompt').addEventListener('input', () => library.renderBar());
@@ -1151,6 +1168,19 @@ function paintView() {
   for (const b of $('#tools').querySelectorAll('button')) b.disabled = !rec || (b.dataset.needParams && !rec.params);
   for (const el of $('#history').children) el.classList.toggle('on', el.dataset.id === rec?.id);
   paintToolCosts();
+  paintStar();
+}
+
+// 收藏按钮：这张图已经在云端图库里就显示成实心星
+async function paintStar() {
+  const b = $('#star-btn');
+  if (!b) return;
+  const rec = cur();
+  const item = rec ? await gallery.savedItem(rec) : null;
+  if (rec !== cur()) return;
+  b.classList.toggle('starred', !!item);
+  b.querySelector('span:not(.icon)').textContent = item ? '已收藏' : '收藏';
+  b.title = item ? '已在云端图库：点击查看、移动或删除' : '收藏到云端图库（存在服务器上，换设备也能看到）';
 }
 
 const COST_NOTE = '按 NAI 官网的计价公式估算，以实际扣费为准';
@@ -1445,9 +1475,10 @@ async function handleImported(blob) {
   importDialog(blob, meta && (meta.prompt || meta.v4_prompt) ? meta : null);
 }
 
-function importDialog(blob, meta) {
+// 拖入的图片：meta 是图片里读到的参数；从云端图库取回：opts.params 已经是本页的设置格式
+function importDialog(blob, meta, opts = {}) {
   const url = URL.createObjectURL(blob);
-  const p = meta ? parseMeta(meta) : null;
+  const p = opts.params ? { characters: [], ucPreset: 'none', ...opts.params } : meta ? parseMeta(meta) : null;
   const groups = p ? IMPORT_GROUPS.filter((g) => g[3](p)) : [];
   const picked = new Set(groups.map((g) => g[0]));
   const info = [];
@@ -1455,7 +1486,7 @@ function importDialog(blob, meta) {
     const facts = [p.width && p.height ? `${p.width}×${p.height}` : '', p.steps ? `${p.steps} 步` : '',
       p.scale != null ? `CFG ${p.scale}` : '', p.sampler || '', p.seed ? `seed ${p.seed}` : ''].filter(Boolean);
     info.push(h('div', { class: 'import-facts mono' }, facts.join(' · ')));
-    if (meta._source) info.push(h('div', { class: 'faint' }, meta._source));
+    if (meta?._source) info.push(h('div', { class: 'faint' }, meta._source));
     const block = (label, text) => text && info.push(h('div', { class: 'import-block' }, h('b', {}, label), h('p', {}, text)));
     block('提示词', p.prompt);
     block('负面', p.negative);
@@ -1481,7 +1512,7 @@ function importDialog(blob, meta) {
     save();
   });
   const close = openModal({
-    title: p ? '读取图片参数' : '使用这张图片',
+    title: opts.params ? '取回参数' : p ? '读取图片参数' : '使用这张图片',
     cls: 'import-modal',
     body: [
       h('div', { class: 'import' }, h('img', { class: 'import-img', src: url, alt: '' }), h('div', { class: 'import-info' }, info)),
@@ -1498,11 +1529,14 @@ function importDialog(blob, meta) {
           if (!keys.length) return;
           Object.assign(S, structuredClone(pick(p, keys)));
           afterBulkChange();
-          const { width, height } = await makeThumb(blob, 8);
-          showView([{ id: uid(), blob, width, height, params: snapshotParams(), tool: '导入' }]);
-          toast('已导入所选参数', 'ok');
+          if (opts.rec) showView([opts.rec]);
+          else {
+            const { width, height } = await makeThumb(blob, 8);
+            showView([{ id: uid(), blob, width, height, params: snapshotParams(), tool: '导入' }]);
+          }
+          toast(opts.params ? '已取回所选参数' : '已导入所选参数', 'ok');
         }),
-      }, '导入参数') : null,
+      }, opts.params ? '取回参数' : '导入参数') : null,
     ],
     onClose: () => setTimeout(() => URL.revokeObjectURL(url), 1000),
   });
@@ -1605,6 +1639,7 @@ function renderHistBar() {
       }, all ? '全不选' : '全选')),
     h('div', { class: 'hist-bar-btns' },
       h('button', { class: 'btn primary small', type: 'button', disabled: !n, onclick: () => downloadMany(chosen()) }, icon('download', 14), h('span', {}, '下载')),
+      h('button', { class: 'btn ghost small', type: 'button', title: '收藏到云端图库', disabled: !n, onclick: (e) => gallery.saveWithPicker(chosen(), e.currentTarget) }, icon('star', 14)),
       h('button', { class: 'btn ghost small', type: 'button', title: '删除选中', disabled: !n, onclick: () => deleteRecords(chosen()) }, icon('trash', 14)),
       h('button', { class: 'btn ghost small', type: 'button', onclick: () => setSelecting(false) }, '完成')),
   );
@@ -1847,6 +1882,7 @@ function resetUserView() {
   showView([]);
   renderHistory();
   library.reset();
+  gallery.reset();
   resetHistories();
   Object.assign(S, defaults());
   renderAll();
@@ -1861,6 +1897,7 @@ async function enter() {
   app.user = { id: me.id || me.user, name: me.user, admin: !!me.is_admin };
   loadUserState();
   library.load();
+  gallery.load();
   $('#login').hidden = true;
   $('#user-name').textContent = me.user;
   $('#manage-link').hidden = !me.is_admin;
