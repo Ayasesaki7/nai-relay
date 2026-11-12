@@ -16,7 +16,7 @@ from starlette.responses import JSONResponse
 
 from .management import bearer
 
-KINDS = {'library': 2 << 20, 'snapshots': 4 << 20}  # 每份文档的大小上限（字节）
+KINDS = {'library': 2 << 20, 'snapshots': 4 << 20, 'booru': 4 << 20}  # 每份文档的大小上限（字节）；booru = 灵感画廊的收藏
 
 
 def _error(status, message, **extra):

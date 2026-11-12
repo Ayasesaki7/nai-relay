@@ -26,7 +26,7 @@ function normSnaps(d) {
 }
 
 /** 一份存在服务器上的文档：本地先改，攒一下再整份保存；别的设备改过（409）就拿最新的重放本地改动 */
-function createDoc({ api, kind, normalize, onChange, onError }) {
+export function createDoc({ api, kind, normalize, onChange, onError }) {
   const d = { kind, rev: 0, data: normalize(null), state: 'idle', gen: 0, pending: [], saving: false, timer: 0, failed: '' };
   const schedule = (ms) => { clearTimeout(d.timer); d.timer = setTimeout(flush, ms); };
   d.load = async () => {

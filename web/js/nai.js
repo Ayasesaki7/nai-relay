@@ -362,6 +362,10 @@ export function createApi(getKey, onUnauthorized) {
     assetPutEncoding: (id, model, info, bytes) => request('PUT', encPath(id, model, info), { body: bytes }),
     assetUpdate: (id, body) => request('PATCH', `/proxy/assets/items/${id}`, { json: body }),
     assetBatch: (op, ids, category) => request('POST', '/proxy/assets/batch', { json: { op, ids, category } }),
+    // 灵感画廊：图片站的列表和图片都经服务器代取
+    booruSources: () => request('GET', '/proxy/booru/sources'),
+    booruPosts: (params, signal) => request('GET', `/proxy/booru/posts?${new URLSearchParams(params)}`, { signal }),
+    booruImage: (url, signal) => request('GET', `/proxy/booru/image?u=${encodeURIComponent(url)}`, { blob: true, signal }),
   };
 }
 

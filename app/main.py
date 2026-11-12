@@ -21,6 +21,7 @@ from .tags import TagDict, create_tag_router, keep_updated, DICT_FILE
 from .userdata import UserData, create_userdata_router
 from .gallery import Gallery, create_gallery_router
 from .assets import Assets, create_assets_router
+from .booru import Booru, create_booru_router
 
 IMAGE = config.IMAGE_UPSTREAM
 API = config.API_UPSTREAM
@@ -126,6 +127,7 @@ app.include_router(create_tag_router(control, tag_dict, lambda: client))
 app.include_router(create_userdata_router(control, user_data))
 app.include_router(create_gallery_router(control, gallery))
 app.include_router(create_assets_router(control, assets))
+app.include_router(create_booru_router(control, Booru(lambda: client)))
 
 
 def _error(status: int, message: str) -> JSONResponse:

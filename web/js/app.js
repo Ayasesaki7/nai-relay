@@ -4,6 +4,7 @@ import { createTagBoard, resolvePrompt, history, resetHistories, attachWeightHig
 import { createLibrary } from './library.js';
 import { createGallery } from './gallery.js';
 import { createAssets } from './assets.js';
+import { createBooru } from './booru.js';
 import {
   $, h, icon, blobToB64, bytesToB64, hashString, padForReference, fitDims, resizeToPng, makeThumb,
   quantizeMask, unzip, isImageBytes, readPngText, readStealthMeta, zipFiles, store, safeStorage, uid, randomSeed, clamp,
@@ -128,6 +129,17 @@ const assets = createAssets({
   use: (items) => useAssets(items),
   unuse: (x) => unuseAsset(x),
   modelName: (id) => modelLabel(id),
+});
+const booru = createBooru({
+  api,
+  getKey: () => app.key,
+  toast: (...a) => toast(...a),
+  openModal: (...a) => openModal(...a),
+  saveBlob: (b, n) => saveBlob(b, n),
+  targets: promptTargets,
+  initialTarget: () => lastTagTarget,
+  editPrompt: (ta, v) => editPrompt(ta, v),
+  importBlob: (blob) => handleImported(blob),
 });
 
 /** 程序改提示词输入框：记进撤销栈，然后触发 input 让设置和标签视图跟着更新 */
@@ -425,6 +437,8 @@ function bindControls() {
   $('#lib-open').addEventListener('click', () => library.open('fav'));
   $('#snap-open').append(icon('camera', 13), h('span', {}, '快照'));
   $('#snap-open').addEventListener('click', () => library.open('snap'));
+  $('#booru-open').append(icon('compass', 15), h('span', {}, '灵感画廊'));
+  $('#booru-open').addEventListener('click', () => booru.open());
   $('#gallery-open').append(icon('cloud', 15), h('span', {}, '我的图库'));
   $('#gallery-open').addEventListener('click', () => gallery.open());
   for (const b of $('#mode-toggle').children) b.addEventListener('click', () => setTagMode(b.dataset.mode === 'tag'));
@@ -2046,6 +2060,7 @@ function resetUserView() {
   library.reset();
   gallery.reset();
   assets.reset();
+  booru.reset();
   resetHistories();
   Object.assign(S, defaults());
   renderAll();
