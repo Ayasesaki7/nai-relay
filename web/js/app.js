@@ -3,6 +3,7 @@ import { createTagPanel, CJK, toPrompt, fmtCount } from './tags.js';
 import { createTagBoard, resolvePrompt, history, resetHistories, attachWeightHighlight, refreshWeightHighlights } from './prompt.js';
 import { createLibrary } from './library.js';
 import { createGallery } from './gallery.js';
+import { createAssets } from './assets.js';
 import {
   $, h, icon, blobToB64, bytesToB64, hashString, padForReference, fitDims, resizeToPng, makeThumb,
   quantizeMask, unzip, isImageBytes, readPngText, readStealthMeta, zipFiles, store, safeStorage, uid, randomSeed, clamp,
@@ -114,6 +115,19 @@ const gallery = createGallery({
   restoreParams: (rec) => importDialog(rec.blob, null, { params: rec.params, rec }),
   downloadMany: (recs) => downloadMany(recs),
   onChange: () => paintStar(),
+});
+const assets = createAssets({
+  api,
+  toast: (...a) => toast(...a),
+  openModal: (...a) => openModal(...a),
+  confirmDialog: (...a) => confirmDialog(...a),
+  openMenu: (...a) => openMenu(...a),
+  makeThumb: (b) => makeThumb(b),
+  saveBlob: (b, n) => saveBlob(b, n),
+  inUse: (x) => (x.kind === 'vibe' ? S.vibes : S.charRefs).some((r) => r.asset === x.id),
+  use: (items) => useAssets(items),
+  unuse: (x) => unuseAsset(x),
+  modelName: (id) => modelLabel(id),
 });
 
 /** 程序改提示词输入框：记进撤销栈，然后触发 input 让设置和标签视图跟着更新 */
@@ -667,7 +681,7 @@ function refsChanged() {
 
 function renderCharRefs() {
   const c = caps();
-  const items = [];
+  const items = [assetBar('ref')];
   if (!c.charRef) items.push(h('div', { class: 'notice' }, '当前模型不支持角色参考，切换到 V4.5 后生效。'));
   for (const r of S.charRefs) items.push(charRefCard(r));
   if (!S.charRefs.length) {
@@ -685,7 +699,7 @@ async function addCharRef(files) {
   if (!files[0]) return;
   try {
     const b64 = await padForReference(files[0]);
-    S.charRefs = [{ id: uid(), b64, url: URL.createObjectURL(files[0]), type: 'character&style', strength: 1, fidelity: 0.8 }];
+    S.charRefs = [{ id: uid(), b64, url: URL.createObjectURL(files[0]), type: 'character&style', strength: 1, fidelity: 0.8, fileName: baseName(files[0]) }];
   } catch (e) {
     toast(`图片读取失败：${e.message}`, 'error');
   }
@@ -696,8 +710,10 @@ function charRefCard(r) {
   return h('div', { class: 'ref-card' },
     h('img', { class: 'ref-thumb', src: r.url, alt: '' }),
     h('div', { class: 'ref-body' },
+      r.name ? h('div', { class: 'ref-name' }, r.name) : null,
       h('div', { class: 'ref-top' },
         seg(N.REF_TYPES, r.type, (v) => { r.type = v; }),
+        saveAssetBtn(r, 'ref'),
         removeBtn(() => {
           URL.revokeObjectURL(r.url);
           S.charRefs = S.charRefs.filter((x) => x !== r);
@@ -707,12 +723,28 @@ function charRefCard(r) {
       field('保真度', slider({ min: 0, max: 1, step: 0.01, get: () => r.fidelity, set: (v) => { r.fidelity = v; } }))));
 }
 
-const vibeKey = (v) => `${(v.hash ||= hashString(v.b64))}:${v.info.toFixed(2)}:${model().id}`;
+const vibeKey = (v, modelId = model().id) => `${(v.hash ||= hashString(v.b64))}:${v.info.toFixed(2)}:${modelId}`;
+
+/** 本浏览器没有这份编码时，看素材库（服务器）里有没有，有就取回来存到本地 */
+async function pullVibeEncoding(v, key) {
+  if (!v.asset) return null;
+  const bytes = await assets.getEncoding(v.asset, model().id, v.info);
+  if (!bytes) return null;
+  const enc = bytesToB64(bytes);
+  await store.putVibe(key, enc).catch(() => {});
+  return enc;
+}
 
 const checkVibeCache = debounce(async () => {
   for (const v of S.vibes) {
+    if (v.encOnly) {
+      // 只有编码没有原图：信息量只能用已有编码的值
+      const e = assets.item(v.asset)?.encodings.find((x) => x.model === model().id);
+      if (e) v.info = e.info;
+    }
     try {
-      v.cached = !!(await store.getVibe(vibeKey(v)));
+      const key = vibeKey(v);
+      v.cached = !!(await store.getVibe(key)) || !!(await pullVibeEncoding(v, key));
     } catch {
       v.cached = false;
     }
@@ -723,26 +755,32 @@ const checkVibeCache = debounce(async () => {
 
 function paintVibeStatus(v) {
   if (!v.statusEl) return;
+  if (v.encOnly && v.cached === false) {
+    const have = [...new Set((assets.item(v.asset)?.encodings || []).map((e) => modelLabel(e.model)))];
+    v.statusEl.textContent = `没有原图，当前模型用不了${have.length ? `（只有 ${have.join('、')} 的编码）` : ''}`;
+    v.statusEl.className = 'ref-status bad';
+    return;
+  }
   v.statusEl.textContent = v.cached ? '✓ 已编码，可直接用' : v.cached === false ? '首次使用需编码 · 2 Anlas' : '…';
   v.statusEl.className = `ref-status${v.cached ? ' ok' : ''}`;
 }
 
 function renderVibes() {
   const c = caps();
-  const items = [];
+  const items = [assetBar('vibe')];
   if (!c.vibe) items.push(h('div', { class: 'notice' }, '当前模型不支持氛围迁移，切换到 V4.5 后生效。'));
   for (const v of S.vibes) items.push(vibeCard(v));
   if (S.vibes.length < MAX_VIBES) {
     items.push(dropzone(S.vibes.length ? '继续添加' : '上传氛围参考图', '借用参考图的画风、色调、氛围 · 可多选', addVibes, true));
   }
-  items.push(h('div', { class: 'hint' }, '信息量越低越只取整体风格。每张图首次使用要编码（2 Anlas，结果会缓存在本浏览器）；超过 4 张后每张每次 +2 Anlas。'));
+  items.push(h('div', { class: 'hint' }, '信息量越低越只取整体风格。每张图首次使用要编码（2 Anlas，结果会缓存在本浏览器；存入素材库的还会存到服务器，换设备也不用再编码）；超过 4 张后每张每次 +2 Anlas。'));
   $('#pane-vibe').replaceChildren(...items);
 }
 
 async function addVibes(files) {
   for (const f of files.slice(0, MAX_VIBES - S.vibes.length)) {
     try {
-      S.vibes.push({ id: uid(), b64: await padForReference(f), url: URL.createObjectURL(f), strength: 0.6, info: 1, cached: null });
+      S.vibes.push({ id: uid(), b64: await padForReference(f), url: URL.createObjectURL(f), strength: 0.6, info: 1, cached: null, fileName: baseName(f) });
     } catch (e) {
       toast(`图片读取失败：${e.message}`, 'error');
     }
@@ -755,20 +793,137 @@ function vibeCard(v) {
   v.statusEl = h('span', { class: 'ref-status' });
   paintVibeStatus(v);
   return h('div', { class: 'ref-card' },
-    h('img', { class: 'ref-thumb', src: v.url, alt: '' }),
+    v.url ? h('img', { class: 'ref-thumb', src: v.url, alt: '' }) : h('div', { class: 'ref-thumb empty' }, icon('sparkles', 22)),
     h('div', { class: 'ref-body' },
+      v.name ? h('div', { class: 'ref-name' }, v.name) : null,
       h('div', { class: 'ref-top' },
         v.statusEl,
+        saveAssetBtn(v, 'vibe'),
         removeBtn(() => {
           URL.revokeObjectURL(v.url);
           S.vibes = S.vibes.filter((x) => x !== v);
           refsChanged();
         })),
       field('强度', slider({ min: 0, max: 1, step: 0.01, get: () => v.strength, set: (x) => { v.strength = x; } })),
-      field('信息量', slider({
+      v.encOnly ? h('div', { class: 'hint' }, `信息量 ${v.info}（导入的编码，没有原图，不能改）`) : field('信息量', slider({
         min: 0.01, max: 1, step: 0.01, get: () => v.info,
         set: (x) => { v.info = x; v.cached = null; paintVibeStatus(v); checkVibeCache(); },
       }))));
+}
+
+// ---------- 参考素材库 ----------
+
+function modelLabel(id) {
+  const m = N.MODELS.find((k) => k.id === id);
+  return m ? [m.label, m.sub].filter(Boolean).join(' ') : id.replace('nai-diffusion-', '').replace(/-/g, ' ');
+}
+
+function assetBar(kind) {
+  return h('div', { class: 'asset-bar' },
+    h('button', { type: 'button', class: 'btn ghost small', 'data-assets': kind, onclick: () => assets.open(kind) },
+      icon('layers', 14), h('span', {}, '从素材库选')),
+    h('span', { class: 'faint' }, kind === 'vibe' ? '常用的氛围图存起来，换设备也能用' : '常用的角色图存起来，一键套用'));
+}
+
+function saveAssetBtn(r, kind) {
+  const saved = !!r.asset;
+  return h('button', {
+    class: `icon-btn${saved ? ' on' : ''}`, type: 'button', 'data-save-asset': kind,
+    title: saved ? '已在素材库 · 点一下把当前强度等设置存为这个素材的默认值' : '存入素材库（存到服务器，换设备也能用）',
+    onclick: (e) => saveRefToAssets(r, kind, e.currentTarget),
+  }, icon('layers', 14));
+}
+
+const baseName = (f) => (f?.name || '').replace(/\.[^.]+$/, '').slice(0, 60);
+const refParams = (r, kind) => (kind === 'vibe' ? { strength: r.strength, info: r.info } : { type: r.type, strength: r.strength, fidelity: r.fidelity });
+
+async function saveRefToAssets(r, kind, btn) {
+  btn.disabled = true;
+  try {
+    if (r.asset && assets.item(r.asset)) {
+      await assets.updateParams(r.asset, refParams(r, kind));
+      toast('已把当前设置存为这个素材的默认值', 'ok');
+      return;
+    }
+    const blob = await (await fetch(r.url)).blob();
+    const encodings = [];
+    if (kind === 'vibe') {
+      for (const m of N.MODELS.filter((x) => N.capsOf(x).vibe)) {
+        const enc = await store.getVibe(vibeKey(r, m.id)).catch(() => null);
+        if (enc) encodings.push({ model: m.id, info: +r.info.toFixed(2), data: enc });
+      }
+    }
+    const { item, existed } = await assets.add({ kind, blob, name: r.name || r.fileName || '', params: refParams(r, kind), encodings });
+    r.asset = item.id;
+    r.name ||= item.name;
+    toast(existed ? '这张图已经在素材库里了' : '已存入素材库', existed ? 'info' : 'ok');
+    refsChanged();
+  } catch (e) {
+    toast(`存入素材库失败：${e.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function vibeFromAsset(x) {
+  const blob = x.size ? await api.assetFile(x.id) : null;
+  const thumb = !blob && x.tsize ? await api.assetFile(x.id, true).catch(() => null) : null;
+  const v = {
+    id: uid(), b64: blob ? await padForReference(blob) : null, url: blob || thumb ? URL.createObjectURL(blob || thumb) : '',
+    strength: x.params.strength, info: x.params.info, cached: null, asset: x.id, name: x.name, encOnly: !blob,
+  };
+  if (!blob) {
+    v.hash = x.sha;
+    const e = x.encodings.find((k) => k.model === model().id) || x.encodings[0];
+    if (e) v.info = e.info;
+  }
+  return v;
+}
+
+/** 素材库里选的素材用于当前生图 */
+async function useAssets(items) {
+  const refs = items.filter((x) => x.kind === 'ref');
+  const vibes = items.filter((x) => x.kind === 'vibe');
+  try {
+    if (refs.length) {
+      const x = refs[refs.length - 1];
+      const blob = await api.assetFile(x.id);
+      for (const r of S.charRefs) URL.revokeObjectURL(r.url);
+      S.charRefs = [{ id: uid(), b64: await padForReference(blob), url: URL.createObjectURL(blob), ...x.params, asset: x.id, name: x.name }];
+      S.refTab = 'charRef';
+      if (refs.length > 1) toast('角色参考同时只能用一张，用了最后选的那张', 'info');
+    }
+    let added = 0;
+    for (const x of vibes) {
+      if (S.vibes.some((v) => v.asset === x.id)) continue;
+      if (S.vibes.length >= MAX_VIBES) {
+        toast(`氛围参考最多 ${MAX_VIBES} 张`, 'error');
+        break;
+      }
+      S.vibes.push(await vibeFromAsset(x));
+      added++;
+    }
+    if (added) {
+      if (!refs.length) S.refTab = 'vibe';
+      toast(`已加入氛围参考（共 ${S.vibes.length} 张）`, 'ok', 1600);
+    } else if (refs.length) {
+      toast('已设为角色参考', 'ok', 1600);
+    }
+  } catch (e) {
+    toast(`素材读取失败：${e.message}`, 'error');
+  }
+  renderTabs();
+  refsChanged();
+  checkVibeCache();
+  save();
+}
+
+function unuseAsset(x) {
+  const list = x.kind === 'vibe' ? S.vibes : S.charRefs;
+  for (const r of list.filter((r) => r.asset === x.id)) if (r.url) URL.revokeObjectURL(r.url);
+  if (x.kind === 'vibe') S.vibes = S.vibes.filter((r) => r.asset !== x.id);
+  else S.charRefs = S.charRefs.filter((r) => r.asset !== x.id);
+  refsChanged();
 }
 
 async function encodeVibes(signal) {
@@ -776,10 +931,15 @@ async function encodeVibes(signal) {
   for (const [i, v] of S.vibes.entries()) {
     const key = vibeKey(v);
     let enc = await store.getVibe(key).catch(() => null);
+    if (!enc) enc = await pullVibeEncoding(v, key).catch(() => null);
     if (!enc) {
+      if (v.encOnly) throw new Error(`氛围参考「${v.name || i + 1}」没有原图，只能用于导入时自带编码的模型`);
       setBusyText(`编码氛围参考 ${i + 1}/${S.vibes.length}`);
-      enc = bytesToB64(await api.encodeVibe({ image: v.b64, model: model().id, information_extracted: v.info }, signal));
+      const bytes = await api.encodeVibe({ image: v.b64, model: model().id, information_extracted: v.info }, signal);
+      enc = bytesToB64(bytes);
       store.putVibe(key, enc).catch(() => {});
+      // 素材库里的氛围：编码顺手存到服务器，下次换设备不用再花 Anlas
+      if (v.asset) assets.putEncoding(v.asset, model().id, v.info, bytes).catch(() => {});
       v.cached = true;
       paintVibeStatus(v);
     }
@@ -1885,6 +2045,7 @@ function resetUserView() {
   renderHistory();
   library.reset();
   gallery.reset();
+  assets.reset();
   resetHistories();
   Object.assign(S, defaults());
   renderAll();
@@ -1900,6 +2061,7 @@ async function enter() {
   loadUserState();
   library.load();
   gallery.load();
+  assets.load();
   $('#login').hidden = true;
   $('#user-name').textContent = me.user;
   $('#manage-link').hidden = !me.is_admin;

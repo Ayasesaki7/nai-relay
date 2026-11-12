@@ -297,6 +297,17 @@ export class ApiError extends Error {
 }
 
 export function createApi(getKey, onUnauthorized) {
+  const encPath = (id, model, info) => `/proxy/assets/items/${id}/encoding?model=${encodeURIComponent(model)}&info=${(+info).toFixed(2)}`;
+  // 二进制上传格式：4 字节长度 + meta JSON，4 字节长度 + 缩略图，剩下是原图
+  function uploadFrame(meta, thumb, image) {
+    const mb = new TextEncoder().encode(JSON.stringify(meta));
+    const head = new DataView(new ArrayBuffer(4));
+    head.setUint32(0, mb.length);
+    const th = new DataView(new ArrayBuffer(4));
+    th.setUint32(0, thumb ? thumb.size : 0);
+    return new Blob([head, mb, th, thumb || new Blob(), image || new Blob()]);
+  }
+
   async function request(method, path, { json, body, signal, binary = false, blob = false } = {}) {
     const headers = { Authorization: `Bearer ${getKey()}` };
     if (json !== undefined) headers['Content-Type'] = 'application/json';
@@ -337,20 +348,20 @@ export function createApi(getKey, onUnauthorized) {
     userdataGet: (kind) => request('GET', `/proxy/userdata/${kind}`),
     userdataPut: (kind, rev, data) => request('PUT', `/proxy/userdata/${kind}`, { json: { rev, data } }),
     galleryList: () => request('GET', '/proxy/gallery'),
-    // 二进制格式：4 字节长度 + meta JSON，4 字节长度 + 缩略图，剩下是原图
-    galleryAdd: async (meta, thumb, image, signal) => {
-      const mb = new TextEncoder().encode(JSON.stringify(meta));
-      const head = new DataView(new ArrayBuffer(4));
-      head.setUint32(0, mb.length);
-      const th = new DataView(new ArrayBuffer(4));
-      th.setUint32(0, thumb.size);
-      return request('POST', '/proxy/gallery/items', { body: new Blob([head, mb, th, thumb, image]), signal });
-    },
+    galleryAdd: (meta, thumb, image, signal) => request('POST', '/proxy/gallery/items', { body: uploadFrame(meta, thumb, image), signal }),
     galleryFile: (id, thumb, signal) => request('GET', `/proxy/gallery/items/${id}/${thumb ? 'thumb' : 'image'}`, { blob: true, signal }),
     galleryBatch: (op, ids, album) => request('POST', '/proxy/gallery/batch', { json: { op, ids, album } }),
     galleryAlbum: (op, id, name) => (op === 'create' ? request('POST', '/proxy/gallery/albums', { json: { name } })
       : op === 'rename' ? request('PATCH', `/proxy/gallery/albums/${id}`, { json: { name } })
         : request('DELETE', `/proxy/gallery/albums/${id}`)),
+    // 参考素材库：同样的上传格式，没有原图（只导入了编码的氛围）时图片部分为空
+    assetList: () => request('GET', '/proxy/assets'),
+    assetAdd: (meta, thumb, image) => request('POST', '/proxy/assets/items', { body: uploadFrame(meta, thumb, image) }),
+    assetFile: (id, thumb) => request('GET', `/proxy/assets/items/${id}/${thumb ? 'thumb' : 'image'}`, { blob: true }),
+    assetEncoding: (id, model, info) => request('GET', encPath(id, model, info), { binary: true }),
+    assetPutEncoding: (id, model, info, bytes) => request('PUT', encPath(id, model, info), { body: bytes }),
+    assetUpdate: (id, body) => request('PATCH', `/proxy/assets/items/${id}`, { json: body }),
+    assetBatch: (op, ids, category) => request('POST', '/proxy/assets/batch', { json: { op, ids, category } }),
   };
 }
 

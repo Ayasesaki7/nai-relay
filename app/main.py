@@ -20,6 +20,7 @@ from .management import bearer, create_router
 from .tags import TagDict, create_tag_router, keep_updated, DICT_FILE
 from .userdata import UserData, create_userdata_router
 from .gallery import Gallery, create_gallery_router
+from .assets import Assets, create_assets_router
 
 IMAGE = config.IMAGE_UPSTREAM
 API = config.API_UPSTREAM
@@ -93,6 +94,7 @@ client: httpx.AsyncClient
 tag_dict = TagDict(DICT_FILE)
 user_data = UserData(os.environ.get('USER_DATA_DIR') or Path(control.path).parent / 'users')
 gallery = Gallery(user_data.root, int(os.environ.get('GALLERY_QUOTA_MB') or 5120) << 20)
+assets = Assets(user_data.root, int(os.environ.get('ASSET_QUOTA_MB') or 1024) << 20)
 
 
 @asynccontextmanager
@@ -123,6 +125,7 @@ app.include_router(create_router(control, lambda: client,
 app.include_router(create_tag_router(control, tag_dict, lambda: client))
 app.include_router(create_userdata_router(control, user_data))
 app.include_router(create_gallery_router(control, gallery))
+app.include_router(create_assets_router(control, assets))
 
 
 def _error(status: int, message: str) -> JSONResponse:
