@@ -213,12 +213,14 @@ export function createTagBoard(ta, opts) {
   function chip(seg, i) {
     const wild = /^__[^_].*__$/.test(seg.text);
     const cn = !wild && opts.cnOf(seg.text);
-    const w = Math.abs(seg.weight - 1) > 1e-9 ? h('b', { class: `tb-wt${seg.weight < 1 ? ' down' : ''}` }, `${seg.weight}`) : null;
+    const heavy = Math.abs(seg.weight - 1) > 1e-9;
+    const w = heavy ? h('b', { class: `tb-wt${seg.weight < 1 ? ' down' : ''}` }, `${seg.weight}`) : null;
     const c = h('span', {
-      class: `tb-chip${seg.off ? ' off' : ''}${st.sel.has(i) ? ' sel' : ''}${wild ? ' wild' : ''}`,
+      class: `tb-chip${seg.off ? ' off' : ''}${st.sel.has(i) ? ' sel' : ''}${wild ? ' wild' : ''}${heavy ? (seg.weight > 1 ? ' up' : ' down') : ''}`,
       title: `${seg.text}${cn ? `\n${cn}` : ''}${seg.off ? '\n（已停用）' : ''}\n单击选中，Ctrl/Shift 多选，双击编辑，拖动排序`,
       'data-i': i,
     }, wild ? icon('dice', 12) : null, h('span', { class: 'tb-text' }, wild ? seg.text.slice(2, -2) : seg.text), cn ? h('small', {}, cn) : null, w);
+    if (heavy) c.style.setProperty('--wk', weightStrength(seg.weight).toFixed(2));
     c.addEventListener('pointerdown', (e) => startDrag(e, i));
     c.addEventListener('dblclick', () => startEdit(i));
     return c;
@@ -423,4 +425,105 @@ export function createTagBoard(ta, opts) {
   ta.addEventListener('input', () => { if (el.isConnected && el.offsetParent !== null && st.editing < 0) render(); });
 
   return { el, render, undo, redo };
+}
+
+// ---------- 文本模式的权重高亮 ----------
+
+/** 权重 → 高亮强度 0..1：1.05 也看得出来，±0.5 以上最深 */
+export const weightStrength = (w) => clamp(0.3 + Math.abs(w - 1) * 1.4, 0.3, 1);
+
+/** 每个顶层片段的位置和权重，只返回需要高亮的：加权、降权、停用 */
+export function weightRanges(text) {
+  const out = [];
+  let depth = 0;
+  let weighted = false;
+  let start = 0;
+  const push = (a, b) => {
+    const raw = text.slice(a, b);
+    const lead = raw.length - raw.trimStart().length;
+    const body = raw.trim();
+    if (!body) return;
+    const seg = parseSeg(body);
+    const s = a + lead;
+    const e = s + body.length;
+    if (seg.off) out.push({ start: s, end: e, kind: 'off' });
+    else if (Math.abs(seg.weight - 1) > 1e-9) out.push({ start: s, end: e, kind: seg.weight > 1 ? 'up' : 'down', weight: seg.weight });
+  };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === ':' && text[i + 1] === ':') {
+      weighted = !weighted;
+      i++;
+    } else if (c === '{' || c === '[') depth++;
+    else if ((c === '}' || c === ']') && depth > 0) depth--;
+    else if ((c === ',' || c === '\n') && !depth && !weighted) {
+      push(start, i);
+      start = i + 1;
+    }
+  }
+  push(start, text.length);
+  return out;
+}
+
+const highlighters = new Set();
+const COPY_STYLE = ['fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'wordSpacing', 'tabSize',
+  'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth', 'borderRightWidth', 'borderBottomWidth',
+  'borderLeftWidth', 'textIndent', 'textTransform'];
+
+/**
+ * 在 textarea 后面垫一层，把加权的词涂上底色（文字还是 textarea 自己画的，所以光标、选择都不受影响）。
+ * 加权绿色、降权红色，越偏离 1 颜色越深；停用的词灰色。
+ */
+export function attachWeightHighlight(ta) {
+  const wrap = h('div', { class: 'hl-wrap' });
+  const back = h('div', { class: 'hl-back', 'aria-hidden': 'true' });
+  ta.before(wrap);
+  wrap.append(back, ta);
+  ta.classList.add('hl-ta');
+  let last = null;
+
+  function layout() {
+    const cs = getComputedStyle(ta);
+    for (const k of COPY_STYLE) back.style[k] = cs[k];
+    // textarea 出滚动条时内容区变窄，垫层跟着变窄才能对齐换行
+    const bw = parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth);
+    back.style.width = `${ta.clientWidth + bw}px`;
+    back.style.height = `${ta.offsetHeight}px`;
+    back.scrollTop = ta.scrollTop;
+  }
+
+  function update() {
+    const text = ta.value;
+    if (text === last) return;
+    last = text;
+    const nodes = [];
+    let pos = 0;
+    for (const r of weightRanges(text)) {
+      if (r.start > pos) nodes.push(text.slice(pos, r.start));
+      const m = h('mark', { class: `hl-${r.kind}` }, text.slice(r.start, r.end));
+      if (r.weight != null) m.style.setProperty('--wk', weightStrength(r.weight).toFixed(2));
+      nodes.push(m);
+      pos = r.end;
+    }
+    nodes.push(`${text.slice(pos)}\n`); // 末尾换行也要占一行高
+    back.replaceChildren(...nodes);
+    back.scrollTop = ta.scrollTop;
+  }
+
+  ta.addEventListener('input', update);
+  ta.addEventListener('scroll', () => { back.scrollTop = ta.scrollTop; });
+  new ResizeObserver(layout).observe(ta);
+  const hl = { ta, update, layout };
+  highlighters.add(hl);
+  layout();
+  update();
+  return hl;
+}
+
+/** 程序直接改了 textarea.value（没触发 input）之后调用 */
+export function refreshWeightHighlights() {
+  for (const hl of [...highlighters]) {
+    if (!hl.ta.isConnected) highlighters.delete(hl);
+    else hl.update();
+  }
 }

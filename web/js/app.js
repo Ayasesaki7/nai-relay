@@ -1,6 +1,6 @@
 import * as N from './nai.js';
 import { createTagPanel, CJK, toPrompt, fmtCount } from './tags.js';
-import { createTagBoard, resolvePrompt, history, resetHistories } from './prompt.js';
+import { createTagBoard, resolvePrompt, history, resetHistories, attachWeightHighlight, refreshWeightHighlights } from './prompt.js';
 import { createLibrary } from './library.js';
 import { createGallery } from './gallery.js';
 import {
@@ -163,6 +163,7 @@ function mountBoard(ta) {
     },
   });
   boards.add(b);
+  attachWeightHighlight(ta);
   if (document.body.classList.contains('tagmode')) b.render();
   return b;
 }
@@ -410,7 +411,7 @@ function bindControls() {
   $('#lib-open').addEventListener('click', () => library.open('fav'));
   $('#snap-open').append(icon('camera', 13), h('span', {}, '快照'));
   $('#snap-open').addEventListener('click', () => library.open('snap'));
-  $('#gallery-open').append(icon('cloud', 14), h('span', {}, '图库'));
+  $('#gallery-open').append(icon('cloud', 15), h('span', {}, '我的图库'));
   $('#gallery-open').addEventListener('click', () => gallery.open());
   for (const b of $('#mode-toggle').children) b.addEventListener('click', () => setTagMode(b.dataset.mode === 'tag'));
   setTagMode(!!safeStorage(TAGMODE_STORAGE));
@@ -463,6 +464,7 @@ function syncControls() {
     else if (document.activeElement !== el) el.value = v ?? '';
   }
   for (const s of sliders) s.sync();
+  refreshWeightHighlights();
   refreshBoards();
   library.renderBar();
 }
