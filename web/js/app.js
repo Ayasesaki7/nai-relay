@@ -1,5 +1,7 @@
 import * as N from './nai.js';
 import { createTagPanel, CJK, toPrompt, fmtCount } from './tags.js';
+import { createTagBoard, resolvePrompt, history, resetHistories } from './prompt.js';
+import { createLibrary } from './library.js';
 import {
   $, h, icon, blobToB64, bytesToB64, hashString, padForReference, fitDims, resizeToPng, makeThumb,
   quantizeMask, unzip, isImageBytes, readPngText, readStealthMeta, zipFiles, store, safeStorage, uid, randomSeed, clamp,
@@ -70,19 +72,103 @@ const model = () => N.modelById(S.modelId);
 const caps = () => N.capsOf(model());
 const cur = () => (app.view ? app.view.items[app.view.index] : null);
 const api = N.createApi(() => app.key, () => logout('密钥已失效，请重新输入'));
-// TAG 检索面板可以往这些输入框里加词：正面、负面、各个角色
+// TAG 检索面板、词库可以往这些输入框里加词：正面、负面、各个角色
 let lastTagTarget = 'prompt';
+const promptTargets = () => [
+  { id: 'prompt', label: '正面', ta: $('#prompt') },
+  { id: 'negative', label: '负面', ta: $('#negative') },
+  ...S.characters.map((ch, i) => ({ id: `char:${ch.id}`, label: `角色 ${i + 1}`, ta: document.querySelector(`textarea[data-char="${ch.id}"]`) })),
+].filter((t) => t.ta);
 const tagPanel = createTagPanel({
   api,
   toast: (...a) => toast(...a),
   beforeEdit: () => { sug.skip = true; },
-  targets: () => [
-    { id: 'prompt', label: '正面', ta: $('#prompt') },
-    { id: 'negative', label: '负面', ta: $('#negative') },
-    ...S.characters.map((ch, i) => ({ id: `char:${ch.id}`, label: `角色 ${i + 1}`, ta: document.querySelector(`textarea[data-char="${ch.id}"]`) })),
-  ].filter((t) => t.ta),
+  targets: promptTargets,
   initialTarget: () => lastTagTarget,
+  favorite: (text, anchor) => library.quickFavorite(text, anchor),
 });
+const library = createLibrary({
+  api,
+  getKey: () => app.key,
+  toast: (...a) => toast(...a),
+  openModal: (...a) => openModal(...a),
+  confirmDialog: (...a) => confirmDialog(...a),
+  openMenu: (...a) => openMenu(...a),
+  targets: promptTargets,
+  initialTarget: () => lastTagTarget,
+  editPrompt: (ta, v) => editPrompt(ta, v),
+  cnOf: (t) => tagPanel.cnOf(t),
+  getPromptState: () => structuredClone(pick(S, SNAPSHOT_KEYS)),
+  applyPromptState: (d) => applyPromptState(d),
+});
+const SNAPSHOT_KEYS = ['prompt', 'negative', 'characters', 'quality', 'ucPreset', 'autoPosition'];
+
+/** 程序改提示词输入框：记进撤销栈，然后触发 input 让设置和标签视图跟着更新 */
+function editPrompt(ta, value) {
+  if (ta.value === value) return;
+  const hs = history(ta.dataset.hist || ta.id);
+  hs.undo.push(ta.value);
+  if (hs.undo.length > 100) hs.undo.shift();
+  hs.redo.length = 0;
+  setPrompt(ta, value);
+}
+
+function setPrompt(ta, value) {
+  ta.value = value;
+  sug.skip = true;
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  sug.skip = false;
+}
+
+function applyPromptState(d) {
+  editPrompt($('#prompt'), d.prompt ?? '');
+  editPrompt($('#negative'), d.negative ?? '');
+  for (const k of ['quality', 'ucPreset', 'autoPosition']) if (d[k] !== undefined) S[k] = d[k];
+  S.characters = (Array.isArray(d.characters) ? d.characters : []).map((c) => ({ enabled: true, prompt: '', negative: '', x: 0.5, y: 0.5, ...c, id: uid() }));
+  syncControls();
+  renderCharacters();
+  changed('quality');
+}
+
+// ---------- 标签模式 ----------
+
+const TAGMODE_STORAGE = 'nai-studio:tagmode';
+const boards = new Set();
+
+function mountBoard(ta) {
+  const b = createTagBoard(ta, {
+    edit: setPrompt,
+    cnOf: (t) => tagPanel.cnOf(t),
+    isKnown: (t) => tagPanel.known(t),
+    translate: (names) => tagPanel.translate(names),
+    attachSuggest,
+    favorite: (text, anchor) => library.quickFavorite(text, anchor),
+    lookup: (text) => {
+      const id = ta.dataset.char ? `char:${ta.dataset.char}` : ta.id;
+      if (promptTargets().some((t) => t.id === id)) lastTagTarget = id;
+      tagPanel.open(text);
+    },
+  });
+  boards.add(b);
+  if (document.body.classList.contains('tagmode')) b.render();
+  return b;
+}
+
+function refreshBoards() {
+  if (!document.body.classList.contains('tagmode')) return;
+  for (const b of [...boards]) {
+    if (!b.el.isConnected) boards.delete(b);
+    else b.render();
+  }
+}
+
+function setTagMode(on) {
+  document.body.classList.toggle('tagmode', on);
+  safeStorage(TAGMODE_STORAGE, on ? 1 : null);
+  for (const b of $('#mode-toggle').children) b.classList.toggle('on', (b.dataset.mode === 'tag') === on);
+  closeSuggest();
+  refreshBoards();
+}
 
 // ---------- 通用 UI ----------
 
@@ -299,12 +385,23 @@ function bindControls() {
       changed(k);
     });
   }
-  for (const ta of document.querySelectorAll('textarea.tag-input')) attachSuggest(ta);
+  for (const ta of document.querySelectorAll('.controls textarea.tag-input')) {
+    attachSuggest(ta);
+    mountBoard(ta);
+  }
   $('#tag-open').append(icon('tag', 13), h('span', {}, 'TAG 检索'));
   $('#tag-open').addEventListener('click', () => tagPanel.toggleOpen());
-  // 记住最后编辑的是哪个输入框，打开 TAG 面板时默认加到那里
+  $('#lib-open').append(icon('book', 13), h('span', {}, '词库'));
+  $('#lib-open').addEventListener('click', () => library.open('fav'));
+  $('#snap-open').append(icon('camera', 13), h('span', {}, '快照'));
+  $('#snap-open').addEventListener('click', () => library.open('snap'));
+  for (const b of $('#mode-toggle').children) b.addEventListener('click', () => setTagMode(b.dataset.mode === 'tag'));
+  setTagMode(!!safeStorage(TAGMODE_STORAGE));
+  $('#prompt').addEventListener('input', () => library.renderBar());
+  $('#negative').addEventListener('input', () => library.renderBar());
+  // 记住最后编辑的是哪个输入框，打开 TAG 面板、词库时默认加到那里
   document.addEventListener('focusin', (e) => {
-    const ta = e.target;
+    const ta = e.target.matches?.('.controls .tb-add, .controls .tb') ? e.target.closest('.tb').ta : e.target;
     if (!ta.matches?.('.controls textarea.tag-input')) return;
     lastTagTarget = ta.dataset.char ? `char:${ta.dataset.char}` : ta.id || lastTagTarget;
   });
@@ -312,7 +409,7 @@ function bindControls() {
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k' && app.key) {
       e.preventDefault();
       const ta = document.activeElement;
-      const tok = ta?.matches?.('textarea.tag-input') ? tokenAt(ta) : null;
+      const tok = ta?.matches?.('textarea.tag-input, .tb-add') ? tokenAt(ta) : null;
       tagPanel.open(tok?.word);
     }
   });
@@ -349,6 +446,8 @@ function syncControls() {
     else if (document.activeElement !== el) el.value = v ?? '';
   }
   for (const s of sliders) s.sync();
+  refreshBoards();
+  library.renderBar();
 }
 
 function changed(key) {
@@ -458,12 +557,12 @@ function renderCharacters() {
 
 function charCard(ch, i) {
   const prompt = h('textarea', {
-    class: 'tag-input', rows: 2, spellcheck: 'false', value: ch.prompt, 'data-char': ch.id,
+    class: 'tag-input', rows: 2, spellcheck: 'false', value: ch.prompt, 'data-char': ch.id, 'data-hist': `c:${ch.id}:p`,
     placeholder: '角色提示词，如 girl, red hair, school uniform',
     oninput: (e) => { ch.prompt = e.target.value; save(); },
   });
   const neg = h('textarea', {
-    class: 'tag-input neg', rows: 1, spellcheck: 'false', value: ch.negative,
+    class: 'tag-input neg', rows: 1, spellcheck: 'false', value: ch.negative, 'data-hist': `c:${ch.id}:n`,
     placeholder: '这个角色不要出现的（可选）',
     oninput: (e) => { ch.negative = e.target.value; save(); },
   });
@@ -491,14 +590,34 @@ function charCard(ch, i) {
     type: 'checkbox', class: 'switch', checked: ch.enabled, title: '启用 / 停用',
     onchange: (e) => { ch.enabled = e.target.checked; card.classList.toggle('off', !ch.enabled); save(); },
   });
+  const n = S.characters.length;
+  const move = (to) => {
+    S.characters.splice(to, 0, ...S.characters.splice(i, 1));
+    renderCharacters();
+    save();
+  };
+  const mini = (ic, title, onclick, disabled = false) => h('button', { class: 'icon-btn', type: 'button', title, onclick, disabled }, icon(ic, 14));
+  const texts = h('div', { class: 'char-texts' }, prompt, neg);
   card.append(
     h('div', { class: 'char-head' },
       h('span', { class: 'idx' }, i + 1),
       h('span', { class: 'name' }, `角色 ${i + 1}`),
+      h('span', { class: 'char-tools' },
+        mini('star', '收藏这个角色的提示词', (e) => (ch.prompt.trim() ? library.quickFavorite(ch.prompt, e.currentTarget) : toast('先写角色提示词', 'error'))),
+        mini('up', '上移', () => move(i - 1), i === 0),
+        mini('down', '下移', () => move(i + 1), i === n - 1),
+        mini('copy', '复制一份', () => {
+          if (n >= caps().maxCharacters) return toast(`当前模型最多 ${caps().maxCharacters} 个角色`, 'error');
+          S.characters.splice(i + 1, 0, { ...structuredClone(ch), id: uid() });
+          renderCharacters();
+          save();
+        })),
       toggle,
       removeBtn(() => { S.characters.splice(i, 1); renderCharacters(); save(); })),
-    h('div', { class: 'char-body' }, h('div', { class: 'char-texts' }, prompt, neg), grid),
+    h('div', { class: 'char-body' }, texts, grid),
   );
+  mountBoard(prompt);
+  mountBoard(neg);
   return card;
 }
 
@@ -894,7 +1013,26 @@ async function readNaiMeta(blob) {
   }
 }
 
-const snapshotParams = () => structuredClone(pick(S, PARAM_KEYS));
+const snapshotParams = (src = S) => structuredClone(pick(src, PARAM_KEYS));
+
+/** 生成用的提示词：去掉停用的词（// 开头），把 __分类__ 换成词库里随机一条 */
+function resolvedState() {
+  const missing = new Set();
+  const pickWild = (name) => {
+    const v = library.pickWild(name);
+    if (v == null) missing.add(name);
+    return v;
+  };
+  const r = (text) => resolvePrompt(text || '', pickWild);
+  const out = {
+    ...S,
+    prompt: r(S.prompt),
+    negative: r(S.negative),
+    characters: S.characters.map((c) => ({ ...c, prompt: r(c.prompt), negative: r(c.negative) })),
+  };
+  if (missing.size) toast(`词库里没有这些分类：${[...missing].join('、')}，对应的随机词会原样发送`, 'error', 6000);
+  return out;
+}
 
 async function addRecord(blob, info) {
   const owner = app.user?.id;
@@ -917,7 +1055,8 @@ async function generate() {
     app.busy.abort();
     return;
   }
-  if (!S.prompt.trim() && !S.characters.some((c) => c.enabled && c.prompt.trim())) {
+  const R = resolvedState();
+  if (!R.prompt.trim() && !R.characters.some((c) => c.enabled && c.prompt.trim())) {
     toast('先写点提示词', 'error');
     $('#prompt').focus();
     return;
@@ -930,10 +1069,10 @@ async function generate() {
   const seed = S.seed !== '' ? Number(S.seed) : randomSeed();
   const ok = await runTask('生成中', async (signal) => {
     const vibes = c.vibe && S.vibes.length && !(c.charRef && S.charRefs.length) ? await encodeVibes(signal) : [];
-    const body = N.buildGenerateBody(S, { seed, vibes });
+    const body = N.buildGenerateBody(R, { seed, vibes });
     setBusyText(body.action === 'infill' ? '局部重绘中' : body.action === 'img2img' ? '图生图中' : '生成中');
     const blobs = await extractImages(await api.generate(body, signal));
-    const params = snapshotParams();
+    const params = snapshotParams(R);
     const recs = [];
     for (const [i, blob] of blobs.entries()) {
       const meta = await readNaiMeta(blob);
@@ -1526,7 +1665,7 @@ function tokenAt(ta) {
   let end = pos;
   while (end < text.length && !/[,\n|{}[\]:]/.test(text[end])) end++;
   const raw = text.slice(start, pos);
-  const lead = raw.match(/^\s*(?:-?[\d.]+::)?[\s{}[\]]*/)[0];
+  const lead = raw.match(/^\s*(?:\/\/)?\s*(?:-?[\d.]+::)?[\s{}[\]]*/)[0];
   const word = raw.slice(lead.length);
   const w = word.trim();
   if ((w.length < 2 && !CJK.test(w)) || /::|[{}[\]]/.test(word)) return null;
@@ -1707,6 +1846,8 @@ function resetUserView() {
   app.history = [];
   showView([]);
   renderHistory();
+  library.reset();
+  resetHistories();
   Object.assign(S, defaults());
   renderAll();
   for (const id of ['#user-name', '#user-avatar']) $(id).textContent = '';
@@ -1719,6 +1860,7 @@ async function enter() {
   resetUserView();
   app.user = { id: me.id || me.user, name: me.user, admin: !!me.is_admin };
   loadUserState();
+  library.load();
   $('#login').hidden = true;
   $('#user-name').textContent = me.user;
   $('#manage-link').hidden = !me.is_admin;

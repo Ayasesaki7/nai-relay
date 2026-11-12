@@ -289,9 +289,10 @@ export const QUALITY_SUFFIXES = [
 // ---------- API ----------
 
 export class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, data = null) {
     super(message);
     this.status = status;
+    this.data = data;
   }
 }
 
@@ -308,12 +309,13 @@ export function createApi(getKey, onUnauthorized) {
     }
     if (!res.ok) {
       let msg = res.statusText;
+      let j = null;
       try {
-        const j = await res.json();
+        j = await res.json();
         msg = j.message || (typeof j.detail === 'string' ? j.detail : '') || msg;
       } catch {}
       if (res.status === 401 && msg === 'Invalid proxy key') onUnauthorized();
-      throw new ApiError(res.status, explain(res.status, msg));
+      throw new ApiError(res.status, explain(res.status, msg), j);
     }
     return binary ? new Uint8Array(await res.arrayBuffer()) : res.json();
   }
@@ -330,6 +332,8 @@ export function createApi(getKey, onUnauthorized) {
       request('GET', `/proxy/tags/search?q=${encodeURIComponent(q)}${cat == null ? '' : `&cat=${cat}`}&limit=${limit}`, { signal }),
     tagLookup: (names) => request('POST', '/proxy/tags/lookup', { json: { names } }),
     tagDetail: (name) => request('GET', `/proxy/tags/detail?name=${encodeURIComponent(name)}`),
+    userdataGet: (kind) => request('GET', `/proxy/userdata/${kind}`),
+    userdataPut: (kind, rev, data) => request('PUT', `/proxy/userdata/${kind}`, { json: { rev, data } }),
   };
 }
 

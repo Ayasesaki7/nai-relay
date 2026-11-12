@@ -18,6 +18,7 @@ from . import logger as log
 from .control import ControlStore
 from .management import bearer, create_router
 from .tags import TagDict, create_tag_router, keep_updated, DICT_FILE
+from .userdata import UserData, create_userdata_router
 
 IMAGE = config.IMAGE_UPSTREAM
 API = config.API_UPSTREAM
@@ -89,6 +90,7 @@ queue = GenQueue()
 control = ControlStore(os.environ.get('CONTROL_FILE', '/app/data/control.json'), config.NAI_TOKEN, config.PROXY_KEYS)
 client: httpx.AsyncClient
 tag_dict = TagDict(DICT_FILE)
+user_data = UserData(os.environ.get('USER_DATA_DIR') or Path(control.path).parent / 'users')
 
 
 @asynccontextmanager
@@ -117,6 +119,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 app.include_router(create_router(control, lambda: client,
                                 lambda: {'busy': queue._lock.locked(), 'waiting': queue.waiting}))
 app.include_router(create_tag_router(control, tag_dict, lambda: client))
+app.include_router(create_userdata_router(control, user_data))
 
 
 def _error(status: int, message: str) -> JSONResponse:

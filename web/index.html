@@ -60,14 +60,21 @@
         <section class="sec">
           <div class="sec-title">
             <span>提示词</span>
-            <span class="sec-actions">
-              <button type="button" class="tag-open" id="tag-open" title="用中文或英文查 Danbooru TAG（Ctrl + K）"></button>
-              <label class="mini-switch"><input type="checkbox" data-key="quality"><i></i>质量词</label>
-            </span>
+            <label class="mini-switch"><input type="checkbox" data-key="quality"><i></i>质量词</label>
+          </div>
+          <div class="prompt-tools">
+            <div class="seg small" id="mode-toggle" title="标签模式：每个词一块，可拖动排序、调权重、临时停用">
+              <button type="button" data-mode="text">文本</button><button type="button" data-mode="tag">标签</button>
+            </div>
+            <span class="grow"></span>
+            <button type="button" class="tag-open" id="tag-open" title="用中文或英文查 Danbooru TAG（Ctrl + K）"></button>
+            <button type="button" class="tag-open" id="lib-open" title="收藏的词、分类、随机词、固定词"></button>
+            <button type="button" class="tag-open" id="snap-open" title="保存 / 恢复当前提示词和角色"></button>
           </div>
           <div class="ta-wrap">
             <textarea id="prompt" class="tag-input" data-key="prompt" rows="5" placeholder="1girl, silver hair, looking at viewer, night sky…" spellcheck="false"></textarea>
           </div>
+          <div class="preset-bar" id="preset-bar" hidden></div>
           <div class="sec-title sub">
             <span>负面提示词</span>
             <select data-key="ucPreset" id="uc-preset" class="mini-select" title="负面预设，会加在下面内容的前面"></select>

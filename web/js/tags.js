@@ -17,7 +17,7 @@ export const toPrompt = (name) => (/[a-z]{2,}/i.test(name) ? name.replace(/_/g, 
 
 /** 提示词里的一段 → Danbooru 写法，用来判断某个 TAG 是否已经在提示词里 */
 export function tagKey(s) {
-  return s.trim().replace(/^-?[\d.]+::|::$/g, '').replace(/^[{[\s]+|[}\]\s]+$/g, '').toLowerCase().replace(/\s+/g, '_');
+  return s.trim().replace(/^\/\/\s*/, '').replace(/^-?[\d.]+::|::$/g, '').replace(/^[{[\s]+|[}\]\s]+$/g, '').toLowerCase().replace(/\s+/g, '_');
 }
 
 const hasTag = (text, name) => text.split(/[,\n|]/).some((part) => tagKey(part) === name);
@@ -39,7 +39,7 @@ function removeTag(ta, name) {
  * api: createApi 的返回值；targets(): [{ id, label, ta }]，可以往里加 TAG 的输入框
  * beforeEdit(): 改输入框之前调用（用来跳过一次自动补全）
  */
-export function createTagPanel({ api, targets, toast, beforeEdit, initialTarget }) {
+export function createTagPanel({ api, targets, toast, beforeEdit, initialTarget, favorite }) {
   const cnCache = new Map();
   const st = { q: '', cat: null, items: [], ready: true, error: '', target: 'prompt', stack: [], ctl: null, loading: false };
 
@@ -215,7 +215,8 @@ export function createTagPanel({ api, targets, toast, beforeEdit, initialTarget 
           h('button', {
             type: 'button', class: 'btn ghost small',
             onclick: () => navigator.clipboard.writeText(toPrompt(t.name)).then(() => toast('已复制'), () => toast('复制失败', 'error')),
-          }, icon('copy', 14), '复制')),
+          }, icon('copy', 14), '复制'),
+          favorite ? h('button', { type: 'button', class: 'btn ghost small', onclick: (e) => favorite(toPrompt(t.name), e.currentTarget) }, icon('star', 14), '收藏') : null),
         d.remote_error ? h('div', { class: 'hint warn' }, d.remote_error) : null,
         chipList('别名（搜索它们也会找到这个 TAG）', d.aliases, false),
         chipList('其他名称', d.other_names, false),
@@ -287,5 +288,6 @@ export function createTagPanel({ api, targets, toast, beforeEdit, initialTarget 
     },
     translate,
     cnOf: (name) => cnCache.get(tagKey(name)) || '',
+    known: (name) => { const k = tagKey(name); return !k || cnCache.has(k); },
   };
 }
