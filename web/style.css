@@ -1566,6 +1566,7 @@ body.agent-on .top-agent { background: var(--accent-soft); border-color: var(--a
 .ag-bar { display: flex; gap: 6px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); }
 .ag-conn { flex: 1 1 50%; min-width: 0; }
 .ag-model { flex: 1 1 50%; min-width: 0; height: 26px; padding: 2px 8px !important; font-size: 12px; font-family: var(--mono); }
+.ag-effort { flex: none; max-width: 96px; }
 .ag-list { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; overscroll-behavior: contain; }
 .ag-msg { max-width: 100%; overflow-wrap: anywhere; }
 .ag-msg.user { align-self: flex-end; max-width: 88%; background: var(--panel-3); border: 1px solid var(--line-2); border-radius: 12px 12px 4px 12px; padding: 8px 11px; }

@@ -39,8 +39,12 @@ from .management import bearer
 PRESETS = {
     'deepseek': {'label': 'DeepSeek', 'format': 'openai', 'base_url': 'https://api.deepseek.com',
                  # 2026-10 起：flash 是 V4.1 Flash（能看图），v4-pro 不能看图；旧名 deepseek-chat 等以官方为准，可点「拉取」看最新
-                 'models': ['deepseek-flash', 'deepseek-v4-pro']},
+                 'models': ['deepseek-flash', 'deepseek-v4-pro'],
+                 # 思考强度：off 关掉思考，其余按 reasoning_effort 传（官方只有 low / high / max）
+                 'efforts': ['off', 'low', 'high', 'max']},
     'openai': {'label': 'OpenAI 兼容', 'format': 'openai', 'base_url': None, 'models': [],
+               # 按 OpenAI 的 reasoning_effort 原样传，各家支持的值不一样
+               'efforts': ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
                # 常用的兼容地址，网页上点一下就填好
                'templates': [
                    {'name': 'OpenAI', 'base_url': 'https://api.openai.com/v1'},
@@ -51,7 +55,9 @@ PRESETS = {
                    {'name': '智谱', 'base_url': 'https://open.bigmodel.cn/api/paas/v4'},
                ]},
     'vertex': {'label': 'Vertex AI（Gemini）', 'format': 'gemini', 'base_url': None,
-               'models': ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-3-pro-preview']},
+               'models': ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-3-pro-preview'],
+               # thinkingConfig.thinkingLevel；各型号支持的档位不同（3 Pro 只有 low / high）
+               'efforts': ['minimal', 'low', 'medium', 'high']},
 }
 
 TOKEN_URL = 'https://oauth2.googleapis.com/token'
@@ -397,18 +403,18 @@ class Upstream:
             raise Bad(502, '模型列表的格式看不懂，可以直接手填模型名')
         return {'items': items[:500]}
 
-    async def open_stream(self, c, model, system, messages, tools):
+    async def open_stream(self, c, model, system, messages, tools, effort=''):
         """开始一次对话；返回 (httpx 响应, 解析器)。出错直接抛 Bad"""
         await self._guard(c)
         if c['preset'] == 'vertex':
             url, headers = await self._vertex(c, model, 'streamGenerateContent')
             url += '?alt=sse'
-            body = to_gemini(system, messages, tools)
+            body = to_gemini(system, messages, tools, effort)
             parse = GeminiStream()
         else:
             url = c['base_url'] + '/chat/completions'
             headers = {'Authorization': 'Bearer ' + c['key']}
-            body = to_openai(system, messages, tools, model, deepseek=c['preset'] == 'deepseek')
+            body = to_openai(system, messages, tools, model, deepseek=c['preset'] == 'deepseek', effort=effort)
             parse = OpenAIStream()
         headers['Accept'] = 'text/event-stream'
         client = self.get_client()
@@ -503,9 +509,8 @@ def _data_url(img):
     return f'data:{img["mime"]};base64,{img["data"]}'
 
 
-def to_openai(system, messages, tools, model, deepseek=False):
+def to_openai(system, messages, tools, model, deepseek=False, effort=''):
     out = [{'role': 'system', 'content': system}] if system else []
-    last_user = max((i for i, m in enumerate(messages) if m['role'] == 'user'), default=-1)
     pending = []  # 工具返回的图片：OpenAI 格式的工具结果只能是文字，图片放在紧跟着的一条用户消息里
 
     def flush():
@@ -529,8 +534,8 @@ def to_openai(system, messages, tools, model, deepseek=False):
                 d['tool_calls'] = [{'id': x.get('id') or f'call_{i}_{j}', 'type': 'function',
                                     'function': {'name': x['name'], 'arguments': json.dumps(x.get('args') or {}, ensure_ascii=False)}}
                                    for j, x in enumerate(m['calls'])]
-            # DeepSeek 思考模式下调用工具：同一轮里要把思考过程带回去，新的一轮不用
-            if deepseek and i > last_user and m.get('reasoning'):
+            # DeepSeek 带工具时，之前每一轮的思考过程都要原样带回去，否则报 400（不带工具时会被忽略）
+            if deepseek and m.get('reasoning'):
                 d['reasoning_content'] = m['reasoning']
             out.append(d)
         else:
@@ -540,6 +545,13 @@ def to_openai(system, messages, tools, model, deepseek=False):
     body = {'model': model, 'messages': out, 'stream': True}
     if deepseek:
         body['stream_options'] = {'include_usage': True}
+        if effort == 'off':
+            body['thinking'] = {'type': 'disabled'}
+        elif effort:
+            body['thinking'] = {'type': 'enabled'}
+            body['reasoning_effort'] = effort
+    elif effort:
+        body['reasoning_effort'] = effort
     if tools:
         body['tools'] = [{'type': 'function', 'function': {'name': t['name'], 'description': t.get('description', ''),
                                                            'parameters': t.get('parameters') or {'type': 'object', 'properties': {}}}}
@@ -564,7 +576,7 @@ def gemini_schema(s):
     return out
 
 
-def to_gemini(system, messages, tools):
+def to_gemini(system, messages, tools, effort=''):
     contents = []
 
     def push(role, parts):
@@ -599,6 +611,8 @@ def to_gemini(system, messages, tools):
             'safetySettings': [{'category': c, 'threshold': 'OFF'} for c in GEMINI_SAFETY]}
     if system:
         body['systemInstruction'] = {'parts': [{'text': system}]}
+    if effort:
+        body['generationConfig'] = {'thinkingConfig': {'thinkingLevel': effort.upper()}}
     if tools:
         decls = []
         for t in tools:
@@ -891,6 +905,9 @@ def create_agent_router(store, agents: AgentStore, upstream: Upstream, userdata=
         system = b.get('system') or ''
         if not isinstance(system, str) or len(system) > 60000:
             raise Bad(400, '系统提示词太长')
+        effort = b.get('effort') or ''
+        if effort and effort not in PRESETS[c['preset']].get('efforts', []):
+            raise Bad(400, '思考强度不对')
         messages, tools = b.get('messages'), b.get('tools') or []
         check_messages(messages)
         check_tools(tools)
@@ -902,7 +919,7 @@ def create_agent_router(store, agents: AgentStore, upstream: Upstream, userdata=
         t0 = time.monotonic()
         active[ident['id']] = active.get(ident['id'], 0) + 1
         try:
-            resp, parser = await upstream.open_stream(c, model, system, messages, tools)
+            resp, parser = await upstream.open_stream(c, model, system, messages, tools, effort)
         except BaseException as e:
             active[ident['id']] -= 1
             if isinstance(e, Bad):
@@ -920,7 +937,7 @@ def create_agent_router(store, agents: AgentStore, upstream: Upstream, userdata=
             try:
                 await resp.aclose()
             finally:
-                log.event(evt='agent', user=ident['name'], preset=c['preset'], model=model, status=state['status'],
+                log.event(evt='agent', user=ident['name'], preset=c['preset'], model=model, effort=effort or None, status=state['status'],
                           dur=round(time.monotonic() - t0, 2), usage=state['usage'], shared=foreign)
 
         async def gen():

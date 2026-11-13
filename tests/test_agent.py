@@ -220,7 +220,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.calls[-1].headers['user-agent'], 'nai-relay/1.0')
         out = body['messages']
         self.assertEqual(out[0], {'role': 'system', 'content': '你是助手'})
-        self.assertNotIn('reasoning_content', out[2])  # 上一轮的思考不带
+        self.assertEqual(out[2]['reasoning_content'], '旧思考')  # 带工具时之前每一轮的思考都要带回去
         self.assertEqual(out[3]['content'][1]['image_url']['url'][:22], 'data:image/png;base64,')
         self.assertEqual(out[4]['reasoning_content'], '新思考')  # 这一轮调工具时的思考要带
         self.assertEqual(out[4]['tool_calls'][0]['function'], {'name': 'view_image', 'arguments': '{"id": "r1"}'})
@@ -229,6 +229,38 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out[6]['content'][1]['type'], 'image_url')
         self.assertEqual(body['tools'][0]['function']['name'], 'search_tags')
         self.assertTrue(body['stream'])
+        self.assertNotIn('thinking', body)  # 没选思考强度时什么都不传
+        self.assertNotIn('reasoning_effort', body)
+
+    async def test_reasoning_effort(self):
+        ds = (await self.add(MEMBER, preset='deepseek', key=DS_KEY)).json()['id']
+        r, _ = await self.chat(MEMBER, ds, effort='max')
+        self.assertEqual(r.status_code, 200, r.text)
+        body = json.loads(self.calls[-1].content)
+        self.assertEqual((body['thinking'], body['reasoning_effort']), ({'type': 'enabled'}, 'max'))
+        r, _ = await self.chat(MEMBER, ds, effort='off')
+        body = json.loads(self.calls[-1].content)
+        self.assertEqual(body['thinking'], {'type': 'disabled'})
+        self.assertNotIn('reasoning_effort', body)
+        n = len(self.calls)
+        for bad in ('medium', 'xhigh', 'MAX', 3, ['low']):
+            r, _ = await self.chat(MEMBER, ds, effort=bad)
+            self.assertEqual(r.status_code, 400, bad)
+        self.assertEqual(len(self.calls), n)  # 不合法的不会发出去
+        oa = (await self.add(OWNER, preset='openai', key='k' * 20, base_url='https://llm.example.com/v1', model='x')).json()['id']
+        await self.chat(OWNER, oa, effort='xhigh')
+        body = json.loads(self.calls[-1].content)
+        self.assertEqual(body['reasoning_effort'], 'xhigh')
+        self.assertNotIn('thinking', body)
+        vx = (await self.add(MEMBER, preset='vertex', auth='key', key='AQ.express-synthetic', model='gemini-3-pro-preview')).json()['id']
+        r, _ = await self.chat(MEMBER, vx, effort='low')
+        self.assertEqual(r.status_code, 200, r.text)
+        body = json.loads(self.calls[-1].content)
+        self.assertEqual(body['generationConfig'], {'thinkingConfig': {'thinkingLevel': 'LOW'}})
+        await self.chat(MEMBER, vx)
+        self.assertNotIn('generationConfig', json.loads(self.calls[-1].content))
+        cfg = (await self.client.get('/proxy/agent/config', headers=self.h(MEMBER))).json()
+        self.assertEqual(cfg['presets']['deepseek']['efforts'], ['off', 'low', 'high', 'max'])
 
     async def test_upstream_errors_hide_key(self):
         cid = (await self.add(MEMBER, preset='deepseek', key=DS_KEY)).json()['id']
