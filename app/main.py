@@ -219,9 +219,14 @@ def _page(name: str, headers: dict) -> HTMLResponse:
     return HTMLResponse(html, headers=headers)
 
 
+UI_COOKIE = "nai_ui"
+
+
 @app.get("/", include_in_schema=False)
-async def index():
-    return _page("index.html", {"Cache-Control": "no-cache"})
+async def index(request: Request):
+    # 新版（分页面）是默认；Cookie nai_ui=classic 时给旧版单页界面，两边页面里都有切换按钮
+    name = "index.html" if request.cookies.get(UI_COOKIE) == "classic" else "studio.html"
+    return _page(name, {"Cache-Control": "no-cache", "Vary": "Cookie"})
 
 
 @app.get("/static/v/{ver}/{name:path}", include_in_schema=False)

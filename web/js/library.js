@@ -272,13 +272,14 @@ export function createLibrary(deps) {
     ui.target = null;
     ui.sel = null;
     ui.edit = null;
-    ui.close = deps.openModal({
+    const opts = {
       title: '个人词库',
       wide: true,
       cls: 'lib-modal',
       body: h('div', { class: 'lib' }, h('div', { class: 'lib-top' }, tabsEl, statusEl), pane, fileIn),
       onClose: () => { ui.close = null; lib.flushNow(); snaps.flushNow(); },
-    });
+    };
+    ui.close = deps.openPage?.(opts) || deps.openModal(opts);
     paint();
   }
 

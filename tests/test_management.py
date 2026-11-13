@@ -199,6 +199,15 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
         for bad in [f'/static/v/{v}/../app/config.py', f'/static/v/{v}/%2e%2e/app/config.py', f'/static/v/{v}/nope.js']:
             self.assertEqual((await self.client.get(bad)).status_code, 404, bad)
 
+    async def test_ui_switch_cookie(self):
+        new = await self.client.get('/')
+        self.assertIn('data-ui="studio"', new.text)
+        self.assertIn('Cookie', new.headers['vary'])
+        old = await self.client.get('/', cookies={'nai_ui': 'classic'})
+        self.assertNotIn('data-ui="studio"', old.text)
+        self.assertIn('id="prompt"', old.text)
+        self.assertIn('data-ui="studio"', (await self.client.get('/', cookies={'nai_ui': 'junk'})).text)
+
 
 if __name__ == '__main__':
     unittest.main()

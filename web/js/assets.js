@@ -376,13 +376,14 @@ export function createAssets(deps) {
     if (kind) ui.kind = kind;
     if (!ui.close) {
       ui.root = h('div', { class: 'gal ast' });
-      ui.close = deps.openModal({
+      const opts = {
         title: '参考素材库',
         wide: true,
         cls: 'lib-modal gal-modal',
         body: ui.root,
         onClose: () => { ui.close = null; ui.sel = null; },
-      });
+      };
+      ui.close = deps.openPage?.(opts) || deps.openModal(opts);
       ui.root.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); });
       ui.root.addEventListener('drop', (e) => {
         e.preventDefault();

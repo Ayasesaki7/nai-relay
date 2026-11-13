@@ -294,13 +294,14 @@ export function createGallery(deps) {
     ui.limit = PAGE;
     if (!ui.close) {
       ui.root = h('div', { class: 'gal' });
-      ui.close = deps.openModal({
+      const opts = {
         title: '云端图库',
         wide: true,
         cls: 'lib-modal gal-modal',
         body: ui.root,
         onClose: () => { ui.close = null; ui.sel = null; ui.obs?.disconnect(); },
-      });
+      };
+      ui.close = deps.openPage?.(opts) || deps.openModal(opts);
     }
     load(true);
     paint();

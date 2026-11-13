@@ -6,6 +6,7 @@ import { createGallery } from './gallery.js';
 import { createAssets } from './assets.js';
 import { createBooru } from './booru.js';
 import { createAgent } from './agent.js';
+import { createShell, UI_MODE, switchUi } from './shell.js';
 import {
   $, h, icon, blobToB64, bytesToB64, hashString, padForReference, fitDims, resizeToPng, makeThumb,
   quantizeMask, unzip, isImageBytes, readPngText, readStealthMeta, zipFiles, store, safeStorage, uid, randomSeed, clamp,
@@ -102,6 +103,7 @@ const library = createLibrary({
   initialTarget: () => lastTagTarget,
   editPrompt: (ta, v) => editPrompt(ta, v),
   cnOf: (t) => tagPanel.cnOf(t),
+  openPage: (o) => shell?.openPage(o),
   getPromptState: () => structuredClone(pick(S, SNAPSHOT_KEYS)),
   applyPromptState: (d) => applyPromptState(d),
 });
@@ -113,6 +115,7 @@ const gallery = createGallery({
   confirmDialog: (...a) => confirmDialog(...a),
   openMenu: (...a) => openMenu(...a),
   makeThumb: (b) => makeThumb(b),
+  openPage: (o) => shell?.openPage(o),
   showRecords: (recs) => showView(recs, 0),
   restoreParams: (rec) => importDialog(rec.blob, null, { params: rec.params, rec }),
   downloadMany: (recs) => downloadMany(recs),
@@ -126,6 +129,7 @@ const assets = createAssets({
   openMenu: (...a) => openMenu(...a),
   makeThumb: (b) => makeThumb(b),
   saveBlob: (b, n) => saveBlob(b, n),
+  openPage: (o) => shell?.openPage(o),
   inUse: (x) => (x.kind === 'vibe' ? S.vibes : S.charRefs).some((r) => r.asset === x.id),
   use: (items) => useAssets(items),
   unuse: (x) => unuseAsset(x),
@@ -140,6 +144,7 @@ const booru = createBooru({
   targets: promptTargets,
   initialTarget: () => lastTagTarget,
   editPrompt: (ta, v) => editPrompt(ta, v),
+  openPage: (o) => shell?.openPage(o),
   importBlob: (blob) => handleImported(blob),
 });
 
@@ -160,7 +165,21 @@ const agent = createAgent({
   agentGenerate: (frozen) => agentGenerate(frozen),
   getHistory: () => app.history,
   library: library.agent,
+  mount: UI_MODE === 'studio' ? () => $('#agent-dock') : undefined,
+  onClose: () => shell?.nav('create'),
 });
+
+// 新版界面：左侧导航，各功能是独立页面；旧版没有外壳，功能都是弹窗
+const shell = UI_MODE === 'studio' ? createShell({
+  openAgent: () => agent.open(),
+  closeAgent: () => agent.close(),
+  open: {
+    booru: () => booru.open(),
+    gallery: () => gallery.open(),
+    assets: () => assets.open(),
+    library: () => library.open(),
+  },
+}) : null;
 
 /** 程序改提示词输入框：记进撤销栈，然后触发 input 让设置和标签视图跟着更新 */
 function editPrompt(ta, value) {
@@ -463,6 +482,8 @@ function bindControls() {
   $('#gallery-open').addEventListener('click', () => gallery.open());
   $('#agent-open').append(icon('sparkles', 15), h('span', {}, '助手'));
   $('#agent-open').addEventListener('click', () => agent.toggle());
+  $('#ui-switch').addEventListener('click', () => switchUi(UI_MODE === 'studio' ? 'classic' : 'studio'));
+  if (UI_MODE === 'classic') $('#ui-switch').append(icon('swap', 15), h('span', {}, '新版界面'));
   for (const b of $('#mode-toggle').children) b.addEventListener('click', () => setTagMode(b.dataset.mode === 'tag'));
   setTagMode(!!safeStorage(TAGMODE_STORAGE));
   $('#prompt').addEventListener('input', () => library.renderBar());
@@ -2146,6 +2167,7 @@ function resetUserView() {
   Object.assign(S, defaults());
   renderAll();
   for (const id of ['#user-name', '#user-avatar']) $(id).textContent = '';
+  shell?.stop();
   $('#manage-link').hidden = true;
 }
 
@@ -2169,6 +2191,7 @@ async function enter() {
   loadHistory();
   clearInterval(app.pollTimer);
   app.pollTimer = setInterval(() => !document.hidden && pollQueue(), 4000);
+  shell?.start();
 }
 
 function showLogin(err = '') {
@@ -2209,7 +2232,8 @@ async function onLogin(e) {
 
 // ---------- 全局事件 ----------
 
-const modalOpen = () => !!document.querySelector('.overlay:not(#login)');
+// 新版里切到图库等页面时，创作区的快捷键和拖放也要停
+const modalOpen = () => !!document.querySelector('.overlay:not(#login)') || (shell ? !shell.workActive() : false);
 const inEditable = (el) => el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
 
 function setupGlobal() {

@@ -954,7 +954,7 @@ export function createAgent(deps) {
       addFiles(e.dataTransfer?.files || []);
     });
     root.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !document.querySelector('.overlay')) close(); });
-    document.body.append(root);
+    (deps.mount?.() || document.body).append(root);
     ui.root = root;
   }
 
@@ -1378,6 +1378,7 @@ export function createAgent(deps) {
     ui.open = false;
     ui.root.hidden = true;
     document.body.classList.remove('agent-on');
+    deps.onClose?.();
   }
 
   return {

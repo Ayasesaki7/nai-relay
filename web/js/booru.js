@@ -183,7 +183,7 @@ export function createBooru(deps) {
   async function open() {
     if (ui.close) return;
     ui.body = h('div', { class: 'gal bru' });
-    ui.close = deps.openModal({
+    const opts = {
       title: '灵感画廊',
       cls: 'gal-modal bru-modal',
       body: ui.body,
@@ -194,7 +194,8 @@ export function createBooru(deps) {
         ui.obs?.disconnect();
         releaseAll();
       },
-    });
+    };
+    ui.close = deps.openPage?.(opts) || deps.openModal(opts);
     if (favs.state === 'idle' || favs.state === 'error') favs.load();
     paint();
     if (!ui.sources) {

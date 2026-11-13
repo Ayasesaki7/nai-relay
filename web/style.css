@@ -1536,6 +1536,7 @@ textarea.hl-ta { position: relative; z-index: 1; background: transparent; displa
 @media (max-width: 420px) {
   .top-stats { gap: 5px; }
   .top-stats .tier { display: none; }
+  .top-stats .top-gallery { padding: 0 5px; }
   .user { margin-left: 0; gap: 6px; }
 }
 
