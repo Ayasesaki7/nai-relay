@@ -1463,16 +1463,15 @@ async function paintStar() {
 const COST_NOTE = '按 NAI 官网的计价公式估算，以实际扣费为准';
 const costText = (c) => (c == null ? '不支持' : c === 0 ? '免费' : `${c} Anlas`);
 
-function upscaleScale(r) {
-  const side = Math.max(r.width, r.height);
-  const scale = side * 4 <= 4096 ? 4 : 2;
-  return side * scale > 4096 ? 0 : scale;
-}
+// 2026-11 起放大接口在 image 域名，只收 image / model / declared_blur_sigma，倍数由 NAI 决定；
+// 能放大的范围就是计价表覆盖的像素数（同 rhnu/nib 用的 novelai-bridge）
+const UPSCALE_MODEL = 'nai-diffusion-5-curated';
+const canUpscale = (r) => N.upscaleCost(r.width, r.height) != null;
 
 function toolCosts(r) {
   if (!r || !app.sub) return null;
   return {
-    upscale: upscaleScale(r) ? N.upscaleCost(r.width, r.height) : null,
+    upscale: canUpscale(r) ? N.upscaleCost(r.width, r.height) : null,
     director: Object.fromEntries(N.DIRECTOR_TOOLS.map((t) => [t.id, N.directorCost(t.id, r.width, r.height, app.sub)])),
   };
 }
@@ -1564,14 +1563,13 @@ async function toolResult(r, blobs, tool, toolId) {
 
 async function upscaleCurrent() {
   const r = cur();
-  const scale = upscaleScale(r);
-  if (!scale) {
+  if (!canUpscale(r)) {
     toast('图片已经很大了，不能再放大', 'error');
     return;
   }
-  const ok = await runTask(`放大 ${scale}×`, async (signal) => {
-    const bytes = await api.upscale({ image: await blobToB64(r.blob), width: r.width, height: r.height, scale }, signal);
-    await toolResult(r, await extractImages(bytes), `放大 ${scale}×`, 'upscale');
+  const ok = await runTask('放大', async (signal) => {
+    const bytes = await api.upscale({ image: await blobToB64(r.blob), model: UPSCALE_MODEL, declared_blur_sigma: 0 }, signal);
+    await toolResult(r, await extractImages(bytes), '放大', 'upscale');
   });
   if (ok) refreshSub();
 }
