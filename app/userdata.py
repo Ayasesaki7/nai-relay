@@ -16,7 +16,7 @@ from starlette.responses import JSONResponse
 
 from .management import bearer
 
-KINDS = {'library': 2 << 20, 'snapshots': 4 << 20, 'booru': 4 << 20, 'agent': 16 << 20}  # 每份文档的大小上限（字节）；booru = 灵感画廊的收藏
+KINDS = {'library': 2 << 20, 'snapshots': 4 << 20, 'booru': 4 << 20, 'agent': 16 << 20, 'skills': 8 << 20}  # 每份文档的大小上限（字节）；booru = 灵感画廊的收藏，skills = 助手的技能
 
 
 def _error(status, message, **extra):

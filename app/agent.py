@@ -8,6 +8,9 @@
 - DeepSeek：OpenAI 格式，地址固定；
 - OpenAI 兼容：OpenAI、OpenRouter、通义千问等，自己填地址；
 - Vertex AI：Gemini 原生格式，用服务账号 JSON 或 Express 模式的 API key。
+
+技能（SKILL.md）存在各人的 userdata（skills.json），由网页读写；
+这里只负责把管理员标了「共享」的技能发给其他人（只读）。
 """
 import asyncio
 import base64
@@ -721,6 +724,32 @@ class GeminiStream:
         yield {'t': 'done', 'finish': finish, 'usage': _usage(usage)}
 
 
+SKILL_FILE_MAX = 256 << 10
+SKILL_MAX_FILES = 30
+
+
+def shared_skills(store, userdata, uid):
+    """管理员共享的技能（不含自己的），只挑格式对的"""
+    out = []
+    for k in store.summary()['keys']:
+        if not (k['owner'] and k['enabled']) or k['id'] == uid:
+            continue
+        try:
+            data = userdata.read(k['id'], 'skills').get('data') or {}
+        except (OSError, ValueError):
+            continue
+        for s in (data.get('skills') if isinstance(data, dict) else None) or []:
+            if not (isinstance(s, dict) and s.get('shared') and s.get('enabled', True) is not False
+                    and isinstance(s.get('id'), str) and re.fullmatch(r'[\w-]{1,40}', s['id'])
+                    and isinstance(s.get('files'), dict) and isinstance(s['files'].get('SKILL.md'), str)):
+                continue
+            files = {p: t for p, t in list(s['files'].items())[:SKILL_MAX_FILES]
+                     if isinstance(p, str) and isinstance(t, str) and len(p) <= 200 and len(t) <= SKILL_FILE_MAX}
+            if 'SKILL.md' in files:
+                out.append({'id': f'{k["id"][:8]}-{s["id"]}', 'owner': k['name'], 'files': files})
+    return out
+
+
 class _ClosingStream(StreamingResponse):
     """不管浏览器是中途断开还是根本没开始读，都要关掉上游连接、释放计数"""
     def __init__(self, content, on_close, **kw):
@@ -736,7 +765,7 @@ class _ClosingStream(StreamingResponse):
 
 # ---------- 路由 ----------
 
-def create_agent_router(store, agents: AgentStore, upstream: Upstream):
+def create_agent_router(store, agents: AgentStore, upstream: Upstream, userdata=None):
     router = APIRouter(prefix='/proxy/agent')
     active = {}
 
@@ -777,6 +806,13 @@ def create_agent_router(store, agents: AgentStore, upstream: Upstream):
         return JSONResponse({'presets': PRESETS, 'is_admin': bool(ident['owner']),
                              'connections': [view(c, ident) for c in agents.visible(ident['id'])]},
                             headers={'Cache-Control': 'no-store'})
+
+    @router.get('/skills')
+    @handle
+    async def skills(request: Request):
+        ident = who(request)
+        items = shared_skills(store, userdata, ident['id']) if userdata else []
+        return JSONResponse({'items': items}, headers={'Cache-Control': 'no-store'})
 
     @router.post('/connections')
     @handle
@@ -829,7 +865,7 @@ def create_agent_router(store, agents: AgentStore, upstream: Upstream):
         if c['preset'] == 'vertex' and not re.fullmatch(r'[A-Za-z0-9._@-]{1,120}', model):
             raise Bad(400, '模型名格式不对')
         system = b.get('system') or ''
-        if not isinstance(system, str) or len(system) > 30000:
+        if not isinstance(system, str) or len(system) > 60000:
             raise Bad(400, '系统提示词太长')
         messages, tools = b.get('messages'), b.get('tools') or []
         check_messages(messages)

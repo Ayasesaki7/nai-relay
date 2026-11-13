@@ -130,7 +130,7 @@ app.include_router(create_gallery_router(control, gallery))
 app.include_router(create_assets_router(control, assets))
 app.include_router(create_booru_router(control, Booru(lambda: client)))
 agent_store = AgentStore(os.environ.get('AGENT_FILE') or Path(control.path).parent / 'agent.json')
-app.include_router(create_agent_router(control, agent_store, Upstream(lambda: client)))
+app.include_router(create_agent_router(control, agent_store, Upstream(lambda: client), user_data))
 
 
 def _error(status: int, message: str) -> JSONResponse:

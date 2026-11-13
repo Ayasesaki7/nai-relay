@@ -374,6 +374,7 @@ export function createApi(getKey, onUnauthorized) {
     agentDelete: (id) => request('DELETE', `/proxy/agent/connections/${id}`),
     agentModels: (id) => request('GET', `/proxy/agent/connections/${id}/models`),
     agentChat: (body, signal) => request('POST', '/proxy/agent/chat', { json: body, signal, stream: true }),
+    agentSkills: () => request('GET', '/proxy/agent/skills'),
   };
 }
 

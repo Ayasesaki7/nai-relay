@@ -1644,3 +1644,22 @@ body.agent-on .top-agent { background: var(--accent-soft); border-color: var(--a
   .ag-msg.user { max-width: 94%; }
 }
 .modal.ag-modal { width: min(640px, 100%); }
+
+/* 助手技能 */
+.ag-row-start { display: flex; gap: 8px; flex-wrap: wrap; }
+.ag-skill-row.off > div:nth-child(2) { opacity: 0.55; }
+.ag-skill-row .switch { flex: none; }
+.ag-skill-desc { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 2px; }
+.ag-skill-desc.bad, p.bad { color: var(--danger); }
+.ag-skill-form { min-width: min(560px, 100%); }
+.ag-skill-form textarea { font: 12px/1.5 var(--mono); }
+.ag-skill-body { min-height: 220px; }
+.ag-skill-files { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
+.ag-skill-files > .btn { align-self: flex-start; }
+.ag-skill-file { display: flex; flex-direction: column; gap: 4px; padding: 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel-2); }
+.ag-skill-file .ag-row input { flex: 1; font-family: var(--mono); font-size: 12px; }
+.ag-skill-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 1px 8px; margin-bottom: 4px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+.ag-slash { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; max-height: 240px; overflow-y: auto; border: 1px solid var(--line-2); border-radius: var(--radius-sm); background: var(--panel-2); padding: 4px; }
+.ag-slash button { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; border: 0; background: none; color: var(--text); padding: 5px 8px; border-radius: 6px; cursor: pointer; }
+.ag-slash button span { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.ag-slash button.on, .ag-slash button:hover { background: var(--accent-soft); }

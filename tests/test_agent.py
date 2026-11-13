@@ -316,6 +316,33 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         r = await self.client.put('/proxy/userdata/agent', json={'rev': 0, 'data': {'chats': []}}, headers=self.h(MEMBER))
         self.assertEqual(r.status_code, 200, r.text)
 
+    async def test_shared_skills(self):
+        old = m.user_data.root
+        m.user_data.root = Path(tempfile.mkdtemp())
+        self.addCleanup(setattr, m.user_data, 'root', old)
+        md = '---\nname: 画风\ndescription: 换画风时用\n---\n\n步骤'
+        skills = [{'id': 's1', 'shared': True, 'enabled': True, 'files': {'SKILL.md': md, 'refs/a.md': 'A'}},
+                  {'id': 's2', 'shared': False, 'files': {'SKILL.md': md}},
+                  {'id': 's3', 'shared': True, 'enabled': False, 'files': {'SKILL.md': md}},
+                  {'id': 'bad id!', 'shared': True, 'files': {'SKILL.md': md}},
+                  {'id': 's4', 'shared': True, 'files': {'SKILL.md': 3}},
+                  {'id': 's5', 'shared': True, 'files': {'SKILL.md': md, 'big.md': 'x' * (300 << 10)}}]
+        r = await self.client.put('/proxy/userdata/skills', json={'rev': 0, 'data': {'skills': skills}}, headers=self.h(OWNER))
+        self.assertEqual(r.status_code, 200, r.text)
+        # 普通用户「共享」的技能不会给别人
+        await self.client.put('/proxy/userdata/skills', json={'rev': 0, 'data': {'skills': [{'id': 'm1', 'shared': True, 'files': {'SKILL.md': md}}]}},
+                              headers=self.h(MEMBER))
+        self.assertEqual((await self.client.get('/proxy/agent/skills')).status_code, 401)
+        r = await self.client.get('/proxy/agent/skills', headers=self.h(MEMBER))
+        items = r.json()['items']
+        self.assertEqual([x['id'].split('-', 1)[1] for x in items], ['s1', 's5'])
+        self.assertEqual(items[0]['owner'], 'me')
+        self.assertEqual(items[0]['files'], {'SKILL.md': md, 'refs/a.md': 'A'})
+        self.assertNotIn('big.md', items[1]['files'])
+        # 管理员自己不会再收到一份
+        r = await self.client.get('/proxy/agent/skills', headers=self.h(OWNER))
+        self.assertEqual(r.json()['items'], [])
+
 
 if __name__ == '__main__':
     unittest.main()

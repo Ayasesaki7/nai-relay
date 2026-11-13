@@ -5,6 +5,7 @@ import { h, icon, uid, clamp } from './util.js';
 import * as N from './nai.js';
 import { createDoc } from './library.js';
 import { addTo, removeFrom } from './prompt.js';
+import { createSkills } from './skills.js';
 
 const MAX_CHATS = 10;
 const MAX_STEPS = 20;
@@ -170,13 +171,13 @@ const TOOL_LABELS = {
   inspect_creation: '读取当前创作', edit_prompt: '修改提示词', edit_characters: '修改角色', set_generation_settings: '修改生成参数',
   search_tags: '搜索 TAG', lookup_tags: '确认 TAG', search_library: '查词库', save_to_library: '收藏到词库',
   list_snapshots: '查看快照', save_snapshot: '保存快照', apply_snapshot: '恢复快照', search_booru: '图站搜图',
-  list_results: '查看生成历史', view_image: '看图', generate_image: '出图',
+  list_results: '查看生成历史', view_image: '看图', generate_image: '出图', list_skills: '查看技能', read_skill: '读取技能',
 };
 
 // ---------- 小工具 ----------
 
 const snap = (v) => +(0.1 + 0.2 * clamp(Math.round((Number(v) - 0.1) / 0.2), 0, 4)).toFixed(1);
-const capText = (s) => (s.length > TOOL_TEXT_MAX ? `${s.slice(0, TOOL_TEXT_MAX)}…（结果太长，已截断）` : s);
+const capText = (s, max = TOOL_TEXT_MAX) => (s.length > max ? `${s.slice(0, max)}…（结果太长，已截断）` : s);
 const imgCount = (msgs) => msgs.reduce((n, m) => n + (m.images || []).filter((x) => x.data).length, 0);
 const modelName = (id) => { const m = N.modelById(id); return `${m.label} ${m.sub}`; };
 
@@ -314,11 +315,15 @@ export function createAgent(deps) {
     onChange: () => paintStatus(),
     onError: (m) => toast(m, 'error'),
   });
-  addEventListener('pagehide', () => { const k = deps.getKey(); if (k) doc.beacon(k); });
+  const skills = createSkills({
+    api, toast, openModal: deps.openModal, confirmDialog: deps.confirmDialog, openMenu: deps.openMenu, isAdmin: deps.isAdmin,
+    onChange: () => paintHint(),
+  });
+  addEventListener('pagehide', () => { const k = deps.getKey(); if (k) { doc.beacon(k); skills.beacon(k); } });
 
   const ui = {
     root: null, list: null, ta: null, sendBtn: null, connSel: null, modelIn: null, modelList: null, title: null,
-    thumbs: null, undoBar: null, status: null,
+    thumbs: null, undoBar: null, status: null, slashBox: null, slashSel: 0,
     open: false, config: null, configErr: '', chat: null, draft: [], run: null, lastRun: null,
     approvals: new Map(), booru: new Map(), paintQueued: false, openSet: new Set(), stick: false, models: {},
   };
@@ -376,7 +381,8 @@ export function createAgent(deps) {
       if (m.role === 'user') {
         const imgs = (m.images || []).filter((x) => x.data);
         const lost = (m.images || []).length - imgs.length;
-        out.push({ role: 'user', text: (m.text || '') + (lost ? `\n（这条消息原有 ${lost} 张图，已过期删除）` : ''), images: imgs.map((x) => ({ mime: x.mime, data: x.data })) });
+        const pre = m.skill ? `<skill name="${m.skill.name}">\n${m.skill.text}\n</skill>\n\n用户点名使用技能「${m.skill.name}」，按上面的说明处理${m.text ? '下面的请求' : ''}。\n\n` : '';
+        out.push({ role: 'user', text: pre + (m.text || '') + (lost ? `\n（这条消息原有 ${lost} 张图，已过期删除）` : ''), images: imgs.map((x) => ({ mime: x.mime, data: x.data })) });
       } else if (m.role === 'assistant') {
         if (!m.text && !m.calls?.length) continue;
         const a = { role: 'assistant', text: m.text || '' };
@@ -698,6 +704,7 @@ export function createAgent(deps) {
     list_results: (a) => listResults(a),
     view_image: (a, ctx) => viewImage(a, ctx.chat),
     generate_image: (a, ctx) => generateImage(a, ctx.call, ctx.signal),
+    ...skills.run,
   };
 
   async function runTool(call, chat, signal) {
@@ -707,7 +714,7 @@ export function createAgent(deps) {
       if (call.args?._invalid != null) throw new Error('参数不是合法的 JSON，请重新调用');
       const r = await fn(call.args || {}, { call, chat, signal });
       if (r && r.images) return { result: capText(JSON.stringify(r.result)), images: r.images };
-      return { result: capText(JSON.stringify(r ?? { ok: true })) };
+      return { result: capText(JSON.stringify(r ?? { ok: true }), call.name === 'read_skill' ? 60000 : TOOL_TEXT_MAX) };
     } catch (e) {
       if (signal.aborted) throw Object.assign(new Error('已停止'), { name: 'AbortError' });
       return { result: JSON.stringify({ error: e.message || String(e) }), error: true };
@@ -719,7 +726,8 @@ export function createAgent(deps) {
   async function streamOnce(chat, msg, signal) {
     const c = currentConn();
     const res = await api.agentChat({
-      conn: c.id, model: currentModel(c), system: settings().system || DEFAULT_SYSTEM, messages: wire(chat.messages), tools: TOOL_DEFS,
+      conn: c.id, model: currentModel(c), system: (settings().system || DEFAULT_SYSTEM) + skills.catalogText(), messages: wire(chat.messages),
+      tools: [...TOOL_DEFS, ...skills.tools()],
     }, signal);
     let finished = false;
     for await (const ev of readSse(res)) {
@@ -793,6 +801,11 @@ export function createAgent(deps) {
     if (ui.run) return;
     const text = ui.ta.value.trim();
     if (!text && !ui.draft.length) return;
+    const picked = skills.slash(text);
+    if (!picked && /^\/\S+$/.test(text)) {
+      toast(`没有启用叫「${text.slice(1)}」的技能`, 'error');
+      return;
+    }
     const c = currentConn();
     if (!c) {
       toast('先添加一个大模型连接', 'error');
@@ -809,8 +822,9 @@ export function createAgent(deps) {
       toast(`一段对话最多 ${MAX_CHAT_IMAGES} 张图，开个新对话吧`, 'error');
       return;
     }
-    chat.messages.push({ role: 'user', text, images: ui.draft.splice(0) });
+    chat.messages.push(picked ? { role: 'user', text: picked.rest, skill: picked.skill, images: ui.draft.splice(0) } : { role: 'user', text, images: ui.draft.splice(0) });
     chat.title ||= (text || '图片').slice(0, 40);
+    hideSlash();
     chat.conn = c.id;
     chat.model = currentModel(c);
     chat.at = Date.now();
@@ -886,10 +900,20 @@ export function createAgent(deps) {
     ui.undoBar = h('div', { class: 'ag-undo', hidden: true });
     ui.ta = h('textarea', {
       class: 'ag-input', rows: 1, placeholder: '想要什么画面？或让助手改提示词…', title: 'Enter 发送，Shift+Enter 换行，可以粘贴图片',
-      oninput: autoGrow,
+      oninput: () => { autoGrow(); paintSlash(); },
       onkeydown: (e) => {
         e.stopPropagation();
-        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+        const sug = ui.slashBox && !ui.slashBox.hidden ? [...ui.slashBox.children] : [];
+        if (sug.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+          e.preventDefault();
+          ui.slashSel = (ui.slashSel + (e.key === 'ArrowDown' ? 1 : -1) + sug.length) % sug.length;
+          sug.forEach((b, i) => b.classList.toggle('on', i === ui.slashSel));
+        } else if (sug.length && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.isComposing))) {
+          e.preventDefault();
+          sug[ui.slashSel].click();
+        } else if (sug.length && e.key === 'Escape') {
+          hideSlash();
+        } else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
           e.preventDefault();
           send();
         } else if (e.key === 'Escape') close();
@@ -904,6 +928,7 @@ export function createAgent(deps) {
       },
     });
     ui.sendBtn = h('button', { class: 'icon-btn ag-send', type: 'button', onclick: () => (ui.run ? ui.run.ctl.abort() : send()) });
+    ui.slashBox = h('div', { class: 'ag-slash', hidden: true });
     const root = h('aside', { class: 'agent-panel', hidden: true, 'aria-label': '生图助手' },
       h('div', { class: 'ag-head' },
         icon('sparkles', 16), ui.title, ui.status,
@@ -917,6 +942,7 @@ export function createAgent(deps) {
       ui.list,
       ui.undoBar,
       h('div', { class: 'ag-compose' },
+        ui.slashBox,
         ui.thumbs,
         h('div', { class: 'ag-row' },
           h('button', { class: 'icon-btn', type: 'button', title: `添加图片（每条最多 ${MAX_MSG_IMAGES} 张，也可以直接粘贴）`, onclick: pickFiles }, icon('image')),
@@ -930,6 +956,28 @@ export function createAgent(deps) {
     root.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !document.querySelector('.overlay')) close(); });
     document.body.append(root);
     ui.root = root;
+  }
+
+  function paintSlash() {
+    const list = skills.suggest(ui.ta.value);
+    ui.slashBox.hidden = !list.length;
+    if (!list.length) return;
+    ui.slashSel = clamp(ui.slashSel, 0, list.length - 1);
+    ui.slashBox.replaceChildren(...list.map((e, i) => h('button', {
+      type: 'button', class: i === ui.slashSel ? 'on' : '',
+      onmousedown: (ev) => ev.preventDefault(),
+      onclick: () => { ui.ta.value = `/${e.name} `; hideSlash(); autoGrow(); ui.ta.focus(); },
+    }, h('b', {}, `/${e.name}`), h('span', { class: 'faint small' }, e.description))));
+  }
+
+  function hideSlash() {
+    if (ui.slashBox) ui.slashBox.hidden = true;
+    ui.slashSel = 0;
+  }
+
+  function paintHint() {
+    if (!ui.ta) return;
+    ui.ta.placeholder = skills.active().length ? '想要什么画面？打 / 使用技能…' : '想要什么画面？或让助手改提示词…';
   }
 
   function autoGrow() {
@@ -1025,6 +1073,7 @@ export function createAgent(deps) {
       if (m.role === 'user') {
         els.push(h('div', { class: 'ag-msg user' },
           m.images?.length ? h('div', { class: 'ag-imgs' }, m.images.map((x) => (x.data || x.keep ? h('img', { src: imgUrl(x), alt: '' }) : h('span', { class: 'faint small' }, '（图片已过期）')))) : null,
+          m.skill ? h('div', { class: 'ag-skill-chip' }, icon('book', 12), h('span', {}, m.skill.name)) : null,
           m.text ? h('div', { class: 'ag-text' }, m.text) : null));
       } else if (m.role === 'assistant') {
         const live = ui.run && m === chat.messages[chat.messages.length - 1];
@@ -1073,6 +1122,7 @@ export function createAgent(deps) {
         skipped = r.approved === false;
         if (call.name === 'generate_image') summary = r.approved ? `出了 ${r.generated} 张` : '没有出图';
         else if (r.changed === false) summary = '没有变化';
+        else if (call.name === 'read_skill') summary = `${r.skill} · ${r.path}`;
       } catch {}
     } else if (res?.error) {
       try { summary = JSON.parse(res.result).error; } catch { summary = '失败'; }
@@ -1147,6 +1197,7 @@ export function createAgent(deps) {
 
   function openSettings() {
     if (!ui.config) loadConfig();
+    skills.load();
     const body = h('div', { class: 'ag-settings' });
     const close = deps.openModal({ title: '助手设置', body, cls: 'ag-modal' });
     const paint = () => {
@@ -1174,6 +1225,7 @@ export function createAgent(deps) {
             onclick: () => { setSettings({ permission: id }); paint(); },
           }, label))),
           h('p', { class: 'faint small' }, PERM_HINT[s.permission])),
+        skills.section(() => { if (body.isConnected) paint(); paintHint(); }),
         h('div', { class: 'ag-sec' }, h('b', {}, '系统提示词'),
           h('p', { class: 'faint small' }, '告诉助手怎么工作。改坏了可以恢复默认。'),
           sys,
@@ -1316,6 +1368,7 @@ export function createAgent(deps) {
     if (doc.state === 'idle' || doc.state === 'error') doc.load();
     if (!ui.chat && doc.state === 'ready') newChat();
     loadConfig();
+    skills.load();
     paintAll();
     setTimeout(() => ui.ta.focus(), 30);
   }
@@ -1331,12 +1384,13 @@ export function createAgent(deps) {
     open,
     close,
     toggle: () => (ui.open ? close() : open()),
-    load: () => doc.load(),
+    load: () => { doc.load(); skills.load(); },
     reset() {
       ui.run?.ctl.abort();
       ui.run = null;
       for (const a of ui.approvals.values()) a.done(false);
       doc.reset();
+      skills.reset();
       Object.assign(ui, { config: null, configErr: '', chat: null, draft: [], lastRun: null, models: {} });
       ui.booru.clear();
       close();
