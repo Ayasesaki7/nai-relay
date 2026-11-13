@@ -35,7 +35,7 @@ ROUTES: dict[tuple[str, str], str] = {
     ("POST", "/ai/augment-image"): IMAGE,
     ("POST", "/ai/encode-vibe"): IMAGE,
     ("GET", "/ai/generate-image/suggest-tags"): IMAGE,
-    ("POST", "/ai/upscale"): API,
+    ("POST", "/ai/upscale"): IMAGE,  # 2026-11 起 api 域名返回 404 "Cannot POST /ai/upscale"
     ("POST", "/ai/annotate-image"): API,
     ("GET", "/user/subscription"): IMAGE,
     ("GET", "/user/data"): IMAGE,

@@ -209,5 +209,14 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('data-ui="studio"', (await self.client.get('/', cookies={'nai_ui': 'junk'})).text)
 
 
+
+class RouteTests(unittest.TestCase):
+    def test_upstream_hosts(self):
+        # 放大在 2026-11 挪到了 image 域名（api 域名回 404），反推 TAG 仍在 api 域名
+        self.assertEqual(m.ROUTES[("POST", "/ai/upscale")], m.IMAGE)
+        self.assertEqual(m.ROUTES[("POST", "/ai/annotate-image")], m.API)
+        self.assertEqual(m.ROUTES[("POST", "/ai/generate-image")], m.IMAGE)
+
+
 if __name__ == '__main__':
     unittest.main()
