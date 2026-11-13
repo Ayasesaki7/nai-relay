@@ -61,11 +61,15 @@ export function segText(seg) {
 
 export const joinSegs = (segs) => segs.map(segText).join(', ');
 
-/** 调权重：括号写法加减一层；其他按 0.1 调，写成 `1.2::tag::` */
+const BRACE_MAX = 8;
+
+/** 调权重：括号写法加减一层（叠满后转数字写法）；其他按 0.1 调，写成 `1.2::tag::`，范围 -3 ~ 3 */
 export function bumpWeight(seg, dir) {
   if (seg.style === 'brace') {
-    const level = clamp(seg.level + dir, -8, 8);
-    return level ? { ...seg, level, weight: round2(1.05 ** level) } : { ...seg, style: 'plain', level: 0, weight: 1 };
+    const level = seg.level + dir;
+    if (Math.abs(level) <= BRACE_MAX) return level ? { ...seg, level, weight: round2(1.05 ** level) } : { ...seg, style: 'plain', level: 0, weight: 1 };
+    // 括号叠满（约 1.48 / 0.68）再加：改成数字写法接着按 0.1 调，不然会卡在 1.48
+    return { ...seg, style: 'num', level: 0, weight: round2(clamp(Math.round((seg.weight + dir * 0.1) * 10) / 10, -3, 3)) };
   }
   let w = round2(clamp(seg.weight + dir * 0.1, -3, 3));
   if (Math.abs(w) < 1e-9) w = round2(dir * 0.1);

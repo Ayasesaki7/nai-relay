@@ -51,7 +51,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
                 if req.headers['authorization'] != 'Bearer ' + DS_KEY:
                     return httpx.Response(401, json={'error': {'message': f'Authentication Fails, your api key: {req.headers["authorization"][7:]} is invalid'}})
                 if u.path == '/models':
-                    return httpx.Response(200, json={'object': 'list', 'data': [{'id': 'deepseek-chat'}, {'id': 'deepseek-reasoner'}]})
+                    return httpx.Response(200, json={'object': 'list', 'data': [{'id': 'deepseek-flash'}, {'id': 'deepseek-v4-pro'}]})
                 return httpx.Response(200, content=sse(
                     {'choices': [{'index': 0, 'delta': {'role': 'assistant', 'reasoning_content': '想一下'}}]},
                     {'choices': [{'index': 0, 'delta': {'content': '好的，'}}]},
@@ -119,12 +119,33 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         for method, p in (('GET', '/proxy/agent/config'), ('POST', '/proxy/agent/connections'), ('POST', '/proxy/agent/chat')):
             self.assertEqual((await self.client.request(method, p, json={})).status_code, 401, p)
 
+    async def test_probe_models_before_saving(self):
+        probe = lambda who, **b: self.client.post('/proxy/agent/connections/models', json=b, headers=self.h(who))
+        # 新建：用表单里的 key 拉，不保存
+        r = await probe(MEMBER, preset='deepseek', key=DS_KEY)
+        self.assertEqual((r.status_code, r.json()['items']), (200, ['deepseek-flash', 'deepseek-v4-pro']))
+        self.assertNotIn(DS_KEY, r.text)
+        self.assertEqual((await self.client.get('/proxy/agent/config', headers=self.h(MEMBER))).json()['connections'], [])
+        self.assertEqual((await probe(MEMBER, preset='deepseek')).status_code, 400)
+        r = await probe(MEMBER, preset='deepseek', key='sk-wrong-000')
+        self.assertNotIn('sk-wrong-000', r.text)
+        self.assertGreaterEqual(r.status_code, 400)
+        # 编辑：key 留空用已保存的；别人的连接拉不了
+        c = (await self.add(MEMBER, preset='deepseek', key=DS_KEY)).json()
+        r = await probe(MEMBER, id=c['id'], key='', model='', shared=True, daily_limit=5)
+        self.assertEqual((r.status_code, r.json()['items']), (200, ['deepseek-flash', 'deepseek-v4-pro']))
+        self.assertEqual((await probe(OWNER, id=c['id'])).status_code, 404)
+        # 内网地址照样拦
+        self.assertEqual((await probe(MEMBER, preset='openai', base_url='http://127.0.0.1:8080/v1', key='sk-x')).status_code, 400)
+        cfg = (await self.client.get('/proxy/agent/config', headers=self.h(MEMBER))).json()
+        self.assertEqual([(x['id'], x['shared'], x['daily_limit']) for x in cfg['connections']], [(c['id'], False, 0)])
+
     async def test_connection_crud_never_echoes_key(self):
         r = await self.add(MEMBER, preset='deepseek', name='我的 DS', key=DS_KEY)
         self.assertEqual(r.status_code, 200, r.text)
         c = r.json()
         self.assertNotIn(DS_KEY, r.text)
-        self.assertEqual((c['base_url'], c['model'], c['key_hint'], c['mine']), ('https://api.deepseek.com', 'deepseek-chat', '…0001', True))
+        self.assertEqual((c['base_url'], c['model'], c['key_hint'], c['mine']), ('https://api.deepseek.com', 'deepseek-flash', '…0001', True))
         cfg = (await self.client.get('/proxy/agent/config', headers=self.h(MEMBER))).json()
         self.assertEqual([x['id'] for x in cfg['connections']], [c['id']])
         self.assertIn('deepseek', cfg['presets'])
@@ -134,13 +155,13 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get('/proxy/agent/config', headers=self.h(OWNER))).json()['connections'], [])
         self.assertEqual((await self.client.patch(f'/proxy/agent/connections/{c["id"]}', json={'name': 'x'}, headers=self.h(OWNER))).status_code, 404)
         # key 留空 = 沿用
-        r = await self.client.patch(f'/proxy/agent/connections/{c["id"]}', json={'name': '改名', 'model': 'deepseek-reasoner', 'key': ''}, headers=self.h(MEMBER))
+        r = await self.client.patch(f'/proxy/agent/connections/{c["id"]}', json={'name': '改名', 'model': 'deepseek-v4-pro', 'key': ''}, headers=self.h(MEMBER))
         self.assertEqual((r.status_code, r.json()['name'], r.json()['key_hint']), (200, '改名', '…0001'))
         self.assertEqual(json.loads(m.agent_store.path.read_text(encoding='utf-8'))['connections'][0]['key'], DS_KEY)
         if os.name != 'nt':
             self.assertEqual(m.agent_store.path.stat().st_mode & 0o777, 0o600)
         r = await self.client.get(f'/proxy/agent/connections/{c["id"]}/models', headers=self.h(MEMBER))
-        self.assertEqual(r.json()['items'], ['deepseek-chat', 'deepseek-reasoner'])
+        self.assertEqual(r.json()['items'], ['deepseek-flash', 'deepseek-v4-pro'])
         self.assertEqual((await self.client.delete(f'/proxy/agent/connections/{c["id"]}', headers=self.h(OWNER))).status_code, 404)
         self.assertEqual((await self.client.delete(f'/proxy/agent/connections/{c["id"]}', headers=self.h(MEMBER))).status_code, 200)
         self.assertEqual((await self.client.get('/proxy/agent/config', headers=self.h(MEMBER))).json()['connections'], [])

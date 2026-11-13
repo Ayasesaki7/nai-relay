@@ -373,6 +373,8 @@ export function createApi(getKey, onUnauthorized) {
     agentSave: (id, body) => (id ? request('PATCH', `/proxy/agent/connections/${id}`, { json: body }) : request('POST', '/proxy/agent/connections', { json: body })),
     agentDelete: (id) => request('DELETE', `/proxy/agent/connections/${id}`),
     agentModels: (id) => request('GET', `/proxy/agent/connections/${id}/models`),
+    /** 表单还没保存时拉模型列表；id 是正在编辑的连接（key 留空时用它已保存的） */
+    agentProbeModels: (body) => request('POST', '/proxy/agent/connections/models', { json: body }),
     agentChat: (body, signal) => request('POST', '/proxy/agent/chat', { json: body, signal, stream: true }),
     agentSkills: () => request('GET', '/proxy/agent/skills'),
   };

@@ -38,7 +38,8 @@ from .management import bearer
 
 PRESETS = {
     'deepseek': {'label': 'DeepSeek', 'format': 'openai', 'base_url': 'https://api.deepseek.com',
-                 'models': ['deepseek-chat', 'deepseek-reasoner']},
+                 # 2026-10 起：flash 是 V4.1 Flash（能看图），v4-pro 不能看图；旧名 deepseek-chat 等以官方为准，可点「拉取」看最新
+                 'models': ['deepseek-flash', 'deepseek-v4-pro']},
     'openai': {'label': 'OpenAI 兼容', 'format': 'openai', 'base_url': None, 'models': [],
                # 常用的兼容地址，网页上点一下就填好
                'templates': [
@@ -842,6 +843,29 @@ def create_agent_router(store, agents: AgentStore, upstream: Upstream, userdata=
         agents.delete(conn_id, ident['id'])
         log.event(evt='agent_conn', user=ident['name'], action='delete')
         return {'ok': True}
+
+    @router.post('/connections/models')
+    @handle
+    async def probe_models(request: Request):
+        """表单还没保存时先拉模型列表：按表单内容校验连接（不保存）；编辑时 key 留空用已保存的"""
+        ident = who(request)
+        values = await body(request)
+        if not isinstance(values, dict):
+            raise Bad(400, '请求格式不对')
+        values = dict(values)
+        conn_id = values.pop('id', None)
+        old = None
+        if conn_id is not None:
+            if not isinstance(conn_id, str):
+                raise Bad(400, '请求格式不对')
+            old = agents.get(conn_id, ident['id'])
+            if old['owner'] != ident['id']:
+                raise Bad(403, '这是管理员共享的连接，不能修改')
+        values.pop('shared', None)
+        values.pop('daily_limit', None)
+        if not values.get('model'):
+            values.pop('model', None)
+        return await upstream.models(build_connection(values, old, ident))
 
     @router.get('/connections/{conn_id}/models')
     @handle

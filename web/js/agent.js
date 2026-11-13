@@ -1256,6 +1256,8 @@ export function createAgent(deps) {
     const st = {
       preset: old?.preset || 'deepseek',
       auth: old?.auth || 'sa',
+      fetched: null, // 拉取到的模型名
+      fetching: false,
     };
     const name = h('input', { value: old?.name || '', placeholder: '自己起个名字', maxlength: 40 });
     const baseUrl = h('input', { value: old?.base_url || '', placeholder: 'https://…/v1', spellcheck: 'false' });
@@ -1269,6 +1271,18 @@ export function createAgent(deps) {
     const limit = h('input', { type: 'number', min: 0, max: 100000, value: old?.daily_limit ?? 50 });
     const err = h('div', { class: 'error-text' });
     const body = h('div', { class: 'ag-form' });
+    const fetchBtn = h('button', { class: 'btn small ghost', type: 'button', title: '用上面填的地址和 key 向服务商要模型列表', onclick: () => fetchModels() });
+    const pickModel = () => {
+      if (!st.fetched) return null;
+      if (!st.fetched.items.length) return h('small', { class: 'faint' }, '服务商没返回模型，直接手填吧');
+      const cur = modelIn.value.trim();
+      const sel = h('select', {
+        class: 'ag-model-pick',
+        onchange: () => { if (sel.value) { modelIn.value = sel.value; modelIn.dataset.touched = '1'; } },
+      }, h('option', { value: '' }, `从拉取到的 ${st.fetched.items.length} 个模型里选…`),
+      st.fetched.items.map((m) => h('option', { value: m, selected: m === cur }, m)));
+      return h('div', {}, sel, st.fetched.fallback ? h('small', { class: 'faint' }, '没拉到实时列表，这是常用的几个') : null);
+    };
     const fileBtn = h('button', {
       class: 'btn small ghost', type: 'button',
       onclick: () => {
@@ -1281,16 +1295,19 @@ export function createAgent(deps) {
     const paint = () => {
       const p = presets[st.preset] || {};
       if (!old && !modelIn.dataset.touched) modelIn.value = p.models?.[0] || '';
-      modelList.replaceChildren(...(p.models || []).map((m) => h('option', { value: m })));
+      modelList.replaceChildren(...[...new Set([...(p.models || []), ...(st.fetched?.items || [])])].map((m) => h('option', { value: m })));
+      fetchBtn.replaceChildren(icon('download', 13), h('span', {}, st.fetching ? '拉取中…' : '拉取'));
+      fetchBtn.disabled = st.fetching;
       const vertex = st.preset === 'vertex';
       const useSa = vertex && st.auth === 'sa';
       const keyHint = old ? `留空表示不改（当前 ${old.key_hint || '已保存'}）；换了地址或认证方式必须重填` : '';
       key.placeholder = old ? '留空不改' : vertex ? 'Vertex Express 模式的 API key' : 'sk-…';
       sa.placeholder = old && useSa ? `留空表示不改（当前 ${old.key_hint || '服务账号'}）` : '把服务账号 JSON 文件的内容粘贴到这里，或者点下面选择文件';
-      body.replaceChildren(
+      // replaceChildren 会把 null 写成文字「null」，先滤掉
+      body.replaceChildren(...[
         row('类型', h('div', { class: 'seg' }, Object.entries(presets).map(([id, x]) => h('button', {
           type: 'button', class: st.preset === id ? 'on' : '', disabled: !!old && old.preset !== id,
-          onclick: () => { st.preset = id; paint(); },
+          onclick: () => { if (st.preset !== id) st.fetched = null; st.preset = id; paint(); },
         }, x.label)))),
         row('名称', name),
         st.preset === 'openai' ? row('接口地址', h('div', {}, baseUrl,
@@ -1304,16 +1321,16 @@ export function createAgent(deps) {
         useSa ? row('服务账号', h('div', {}, sa, fileBtn), 'Google Cloud 控制台 → IAM → 服务账号 → 密钥 → 添加 JSON 密钥；需要 Vertex AI User 权限') : row('Key', key, keyHint),
         useSa ? row('项目 ID', project) : null,
         vertex && st.auth === 'sa' ? row('区域', location, 'Gemini 3 预览版一般要用 global') : null,
-        row('默认模型', h('div', {}, modelIn, modelList), st.preset === 'openai' ? '需要选支持识图和工具调用的模型' : ''),
+        row('默认模型', h('div', { class: 'ag-model-row' }, h('div', { class: 'ag-model-line' }, modelIn, fetchBtn), modelList, pickModel()),
+          st.preset === 'openai' ? '先填好地址和 key 再点「拉取」；要选支持识图和工具调用的模型' : '填好 key 后点「拉取」可以看到服务商现在有哪些模型'),
         deps.isAdmin() ? h('label', { class: 'switch-row' },
           h('div', {}, h('b', {}, '共享给所有人'), h('small', {}, '其他用户能用这个连接，但看不到 key 和地址')), shared) : null,
         deps.isAdmin() && shared.checked ? row('每人每天', limit, '每个人每天最多请求几次（助手每一步算一次），0 为不限') : null,
-        err);
+        err].filter(Boolean));
     };
     modelIn.addEventListener('input', () => { modelIn.dataset.touched = '1'; });
     shared.addEventListener('change', paint);
-    const save = async () => {
-      err.textContent = '';
+    const collect = () => {
       const b = { name: name.value.trim() || presets[st.preset]?.label, model: modelIn.value.trim() };
       if (!old) b.preset = st.preset;
       if (st.preset === 'openai') b.base_url = baseUrl.value.trim();
@@ -1330,6 +1347,28 @@ export function createAgent(deps) {
         b.shared = shared.checked;
         b.daily_limit = shared.checked ? clamp(Math.round(Number(limit.value) || 0), 0, 100000) : 0;
       }
+      return b;
+    };
+    async function fetchModels() {
+      err.textContent = '';
+      const b = collect();
+      if (old) b.id = old.id;
+      st.fetching = true;
+      paint();
+      try {
+        const r = await api.agentProbeModels(b);
+        st.fetched = { items: r.items || [], fallback: !!r.fallback };
+        if (!modelIn.value.trim() && st.fetched.items[0]) modelIn.value = st.fetched.items[0];
+      } catch (e) {
+        err.textContent = `拉取失败：${e.message}`;
+      } finally {
+        st.fetching = false;
+        paint();
+      }
+    }
+    const save = async () => {
+      err.textContent = '';
+      const b = collect();
       btn.disabled = true;
       try {
         const c = await api.agentSave(old?.id, b);

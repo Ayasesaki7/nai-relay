@@ -1638,6 +1638,10 @@ body.agent-on .top-agent { background: var(--accent-soft); border-color: var(--a
 .ag-form textarea { font: 11px/1.4 var(--mono); }
 .ag-form .field small { margin-top: -2px; }
 .ag-tpl { margin-top: 6px; }
+.ag-model-line { display: flex; gap: 6px; align-items: center; }
+.ag-model-line input { flex: 1; min-width: 0; }
+.ag-model-line .btn { flex: none; }
+.ag-model-pick { width: 100%; margin-top: 6px; font-family: var(--mono); font-size: 12px; }
 .ag-tpl .chip { height: 24px; font-size: 12px; }
 .ag-form .seg button:disabled { opacity: 0.35; cursor: not-allowed; }
 @media (max-width: 640px) {
