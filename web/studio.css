@@ -111,6 +111,22 @@ body.studio:not([data-page="create"]):not([data-page="agent"]) .st-work { displa
 @keyframes st-flash { 50% { background: var(--accent-soft); color: var(--accent); } }
 .studio .controls .sec:first-child { padding-top: 12px; }
 
+/* 提示词页：提示词框和负面框撑满面板剩余的高度，角色框按内容长高，不留一截空白 */
+@media (min-width: 821px) {
+  .studio .controls-scroll { display: flex; flex-direction: column; }
+  .studio .controls .sec { flex: none; }
+  .studio .controls .sec.st-grow { flex: 1 0 auto; display: flex; flex-direction: column; }
+  .studio .st-grow > .ta-wrap { display: flex; flex-direction: column; min-height: 0; }
+  .studio .st-grow > .ta-wrap:has(#prompt) { flex: 3 1 auto; }
+  .studio .st-grow > .ta-wrap:has(#negative) { flex: 1 1 auto; }
+  /* 文本模式撑高输入框，标签模式撑高词块框（另一个保持隐藏） */
+  body.studio:not(.tagmode) .st-grow > .ta-wrap > .hl-wrap { flex: 1; display: flex; flex-direction: column; }
+  body.studio:not(.tagmode) .st-grow > .ta-wrap > .hl-wrap > textarea { flex: 1; }
+  body.studio.tagmode .st-grow > .ta-wrap > .tb { flex: 1; display: flex; flex-direction: column; }
+  body.studio.tagmode .st-grow > .ta-wrap > .tb > .tb-chips { flex: 1; }
+}
+.studio .char-texts textarea { field-sizing: content; min-height: 56px; max-height: 240px; }
+
 /* 助手停靠在左侧，代替参数面板 */
 .st-dock { display: none; min-height: 0; min-width: 0; background: var(--panel); border-right: 1px solid var(--line); }
 body.studio[data-page="agent"] .st-dock { display: flex; flex-direction: column; }
