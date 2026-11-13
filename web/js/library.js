@@ -14,8 +14,60 @@ function normLib(d) {
   const items = (Array.isArray(d.items) ? d.items : []).filter((x) => x && x.id && x.text)
     .map((x) => ({ id: str(x.id, 40), text: str(x.text), title: str(x.title, 80), cat: str(x.cat, 40), at: +x.at || 0 }));
   const presets = (Array.isArray(d.presets) ? d.presets : []).filter((x) => x && x.id)
-    .map((x) => ({ id: str(x.id, 40), name: str(x.name, 60), pos: str(x.pos), neg: str(x.neg), pin: !!x.pin, at: +x.at || 0 }));
+    .map((x) => ({
+      id: str(x.id, 40), name: str(x.name, 60), pos: str(x.pos), neg: str(x.neg), pin: !!x.pin, at: +x.at || 0,
+      // 固定词生图时才拼到提示词前后，不写进编辑框；旧数据（以前是一键插入）默认不启用
+      on: !!x.on, posEnd: !!x.posEnd, negEnd: !!x.negEnd,
+    }));
   return { v: 1, cats, items, presets };
+}
+
+const edgeTrim = (t) => (t || '').trim().replace(/^[\s,]+|[\s,]+$/g, '');
+const joinParts = (parts) => parts.map(edgeTrim).filter(Boolean).join(', ');
+
+/** 启用的固定词，按正面 / 负面、前缀 / 后缀分好 */
+export function fixedParts(presets) {
+  const out = { pre: [], post: [], negPre: [], negPost: [] };
+  for (const p of presets || []) {
+    if (!p.on) continue;
+    if (edgeTrim(p.pos)) out[p.posEnd ? 'post' : 'pre'].push(edgeTrim(p.pos));
+    if (edgeTrim(p.neg)) out[p.negEnd ? 'negPost' : 'negPre'].push(edgeTrim(p.neg));
+  }
+  return out;
+}
+
+/** 把启用的固定词拼到正面 / 负面提示词前后（生图时用，编辑框里不出现） */
+export function withFixed(src, presets) {
+  const f = fixedParts(presets);
+  if (!f.pre.length && !f.post.length && !f.negPre.length && !f.negPost.length) return src;
+  return {
+    ...src,
+    prompt: joinParts([...f.pre, src.prompt || '', ...f.post]),
+    negative: joinParts([...f.negPre, src.negative || '', ...f.negPost]),
+  };
+}
+
+function stripEdges(text, pre, post) {
+  let t = (text || '').trim();
+  const cut = (v) => v.replace(/^[\s,]+|[\s,]+$/g, '');
+  for (const x of pre) {
+    if (t === x) t = '';
+    else if (t.startsWith(x) && /^[\s,]/.test(t.slice(x.length))) t = cut(t.slice(x.length));
+  }
+  for (const x of [...post].reverse()) {
+    if (t === x) t = '';
+    else if (t.endsWith(x) && /[\s,]$/.test(t.slice(0, -x.length))) t = cut(t.slice(0, -x.length));
+  }
+  return t;
+}
+
+/** 取回旧图参数时，把当前启用的固定词从提示词两头去掉，免得生图时重复加 */
+export function stripFixed(params, presets) {
+  const f = fixedParts(presets);
+  const out = { ...params };
+  if (typeof out.prompt === 'string') out.prompt = stripEdges(out.prompt, f.pre, f.post);
+  if (typeof out.negative === 'string') out.negative = stripEdges(out.negative, f.negPre, f.negPost);
+  return out;
 }
 
 function normSnaps(d) {
@@ -192,35 +244,37 @@ export function createLibrary(deps) {
     ]);
   }
 
-  function presetOn(p) {
-    const ta = document.getElementById('prompt');
-    const neg = document.getElementById('negative');
-    const parts = [[ta, p.pos], [neg, p.neg]].filter(([, v]) => v.trim());
-    return parts.length > 0 && parts.every(([t, v]) => containsAll(t.value, v));
+  const presets = () => (lib.state === 'ready' ? lib.data.presets : []);
+  const posLabel = (end) => (end ? '后缀' : '前缀');
+  const presetTip = (p) => [
+    p.pos ? `正面（${posLabel(p.posEnd)}）：${p.pos}` : '',
+    p.neg ? `负面（${posLabel(p.negEnd)}）：${p.neg}` : '',
+  ].filter(Boolean).join('\n');
+
+  function setPresetOn(id, on) {
+    lib.mutate((d) => { const x = d.presets.find((y) => y.id === id); if (x) x.on = on; });
   }
 
-  function togglePreset(p) {
-    const on = presetOn(p);
-    const ta = document.getElementById('prompt');
-    const neg = document.getElementById('negative');
-    if (p.pos.trim()) deps.editPrompt(ta, on ? removeFrom(ta.value, p.pos) : addTo(ta.value, p.pos));
-    if (p.neg.trim()) deps.editPrompt(neg, on ? removeFrom(neg.value, p.neg) : addTo(neg.value, p.neg));
-    toast(on ? `已撤下「${p.name}」` : `已套用「${p.name}」`);
-    renderBar();
-    if (ui.close) paint();
-  }
-
-  /** 提示词下方的固定词快捷条（只显示置顶的） */
+  /** 提示词下方的固定词条：启用的和置顶的都显示，点一下启用 / 停用 */
   function renderBar() {
     const bar = document.getElementById('preset-bar');
     if (!bar) return;
-    const pins = lib.state === 'ready' ? lib.data.presets.filter((p) => p.pin) : [];
-    bar.hidden = !pins.length;
-    bar.replaceChildren(...pins.map((p) => h('button', {
-      type: 'button', class: `chip small${presetOn(p) ? ' on' : ''}`,
-      title: `${p.pos ? `正面：${p.pos}` : ''}${p.neg ? `\n负面：${p.neg}` : ''}\n点击套用 / 撤下`,
-      onclick: () => togglePreset(p),
-    }, icon('pin', 12), p.name || '未命名')));
+    bar.hidden = lib.state !== 'ready';
+    if (bar.hidden) return bar.replaceChildren();
+    const all = lib.data.presets;
+    const shown = all.filter((p) => p.pin || p.on);
+    const onN = all.filter((p) => p.on).length;
+    bar.replaceChildren(
+      h('button', {
+        type: 'button', class: `chip small fixed-head${onN ? ' on' : ''}`,
+        title: '固定词：生图时自动加到提示词前面或后面，不会出现在编辑框里。点击管理 / 修改',
+        onclick: () => open('preset'),
+      }, icon('pin', 12), '固定词', all.length ? h('small', {}, `${onN}/${all.length}`) : null),
+      ...shown.map((p) => h('button', {
+        type: 'button', class: `chip small${p.on ? ' on' : ''}`, 'data-id': p.id,
+        title: `${presetTip(p)}\n点击${p.on ? '停用' : '启用'}`,
+        onclick: () => setPresetOn(p.id, !p.on),
+      }, h('i', { class: 'fx-dot' }), p.name || '未命名')));
   }
 
   // ---------- 快照 ----------
@@ -526,36 +580,51 @@ export function createLibrary(deps) {
 
   function presetPane() {
     const list = lib.data.presets;
+    const onN = list.filter((p) => p.on).length;
     const head = h('div', { class: 'lib-tools' },
-      h('span', { class: 'muted grow' }, '常用的正面 / 负面词组，一键加上或撤下。置顶的会显示在提示词下方。'),
-      h('button', { type: 'button', class: 'btn small primary', onclick: () => { ui.edit = { id: null, name: '', pos: '', neg: '', pin: true }; paint(); } }, icon('plus', 14), '新建'));
-    const rows = list.map((p, i) => {
-      const on = presetOn(p);
-      return h('div', { class: `lib-row preset${on ? ' in' : ''}`, 'data-id': p.id },
-        h('div', { class: 'lib-main' },
-          h('b', {}, p.name || '未命名'),
-          p.pos ? h('span', { class: 'lib-text' }, h('em', {}, '正面 '), p.pos) : null,
-          p.neg ? h('span', { class: 'lib-text' }, h('em', { class: 'neg' }, '负面 '), p.neg) : null),
-        h('span', { class: 'lib-acts' },
-          h('button', { type: 'button', class: `btn small ${on ? 'ghost' : 'primary'}`, onclick: () => togglePreset(p) }, on ? '撤下' : '套用'),
-          h('button', { type: 'button', class: `icon-btn${p.pin ? ' on' : ''}`, title: p.pin ? '取消置顶' : '置顶到提示词下方', onclick: () => lib.mutate((d) => { const x = d.presets.find((y) => y.id === p.id); if (x) x.pin = !x.pin; }) }, icon('pin', 14)),
-          h('button', { type: 'button', class: 'icon-btn', title: '上移', disabled: !i, onclick: () => lib.mutate((d) => { const k = d.presets.findIndex((y) => y.id === p.id); if (k > 0) d.presets.splice(k - 1, 0, ...d.presets.splice(k, 1)); }) }, icon('up', 14)),
-          h('button', { type: 'button', class: 'icon-btn', title: '编辑', onclick: () => { ui.edit = { ...p }; paint(); } }, icon('edit', 14)),
-          h('button', { type: 'button', class: 'icon-btn', title: '删除', onclick: () => lib.mutate((d) => { d.presets = d.presets.filter((y) => y.id !== p.id); }) }, icon('trash', 14))));
-    });
+      h('span', { class: 'muted grow' }, `生图时自动加到提示词前面或后面，不会出现在编辑框里。已启用 ${onN} / ${list.length}`),
+      h('button', { type: 'button', class: 'btn small primary', onclick: () => { ui.edit = { id: null, name: '', pos: '', neg: '', pin: true, on: true, posEnd: false, negEnd: false }; paint(); } }, icon('plus', 14), '新建'));
+    const flip = (id, key) => lib.mutate((d) => { const x = d.presets.find((y) => y.id === id); if (x) x[key] = !x[key]; });
+    const line = (p, side) => {
+      const neg = side === 'neg';
+      const text = neg ? p.neg : p.pos;
+      if (!text) return null;
+      const key = neg ? 'negEnd' : 'posEnd';
+      return h('span', { class: 'lib-text fx-line' },
+        h('em', { class: neg ? 'neg' : '' }, neg ? '负面' : '正面'),
+        h('button', { type: 'button', class: `fx-pos${p[key] ? ' end' : ''}`, title: '点击切换加在前面还是后面', onclick: () => flip(p.id, key) }, posLabel(p[key])),
+        text);
+    };
+    const rows = list.map((p, i) => h('div', { class: `lib-row preset${p.on ? ' in' : ' off'}`, 'data-id': p.id },
+      h('label', { class: 'mini-switch', title: p.on ? '已启用，点击停用' : '已停用，点击启用' },
+        h('input', { type: 'checkbox', checked: p.on, onchange: (e) => setPresetOn(p.id, e.target.checked) }), h('i')),
+      h('div', { class: 'lib-main' }, h('b', {}, p.name || '未命名'), line(p, 'pos'), line(p, 'neg')),
+      h('span', { class: 'lib-acts' },
+        h('button', { type: 'button', class: `icon-btn${p.pin ? ' on' : ''}`, title: p.pin ? '取消置顶（停用时不在提示词下方显示）' : '置顶：停用时也显示在提示词下方', onclick: () => flip(p.id, 'pin') }, icon('pin', 14)),
+        h('button', { type: 'button', class: 'icon-btn', title: '上移', disabled: !i, onclick: () => lib.mutate((d) => { const k = d.presets.findIndex((y) => y.id === p.id); if (k > 0) d.presets.splice(k - 1, 0, ...d.presets.splice(k, 1)); }) }, icon('up', 14)),
+        h('button', { type: 'button', class: 'icon-btn', title: '编辑', onclick: () => { ui.edit = { ...p }; paint(); } }, icon('edit', 14)),
+        h('button', { type: 'button', class: 'icon-btn', title: '删除', onclick: () => lib.mutate((d) => { d.presets = d.presets.filter((y) => y.id !== p.id); }) }, icon('trash', 14)))));
     return [head, ui.edit && ui.tab === 'preset' ? presetForm() : null,
-      h('div', { class: 'lib-list' }, list.length ? null : h('div', { class: 'lib-empty' }, '还没有固定词。比如把常用的画风词、负面词存成一组。'), ...rows)];
+      h('div', { class: 'lib-list' }, list.length ? null : h('div', { class: 'lib-empty' }, '还没有固定词。比如把常用的画风串、质量词、负面词存成一组，启用后每次生图自动带上。'), ...rows)];
   }
 
   function presetForm() {
     const e = ui.edit;
-    const name = h('input', { type: 'text', value: e.name, placeholder: '名称，如 厚涂画风' });
-    const pos = h('textarea', { class: 'tag-input', rows: 2, spellcheck: 'false', value: e.pos, placeholder: '加到正面提示词的词' });
-    const neg = h('textarea', { class: 'tag-input neg', rows: 2, spellcheck: 'false', value: e.neg, placeholder: '加到负面提示词的词（可选）' });
+    const name = h('input', { type: 'text', value: e.name, placeholder: '名称，如 厚涂画风', maxlength: 60 });
+    const posSel = (end) => h('select', { class: 'mini-select', title: '加在提示词前面还是后面' },
+      h('option', { value: '', selected: !end }, '加在前面'), h('option', { value: '1', selected: !!end }, '加在后面'));
+    const pos = h('textarea', { class: 'tag-input', rows: 3, spellcheck: 'false', value: e.pos, placeholder: '正面固定词，如 1.3::artist:xxx::, masterpiece' });
+    const neg = h('textarea', { class: 'tag-input neg', rows: 2, spellcheck: 'false', value: e.neg, placeholder: '负面固定词（可选）' });
+    const posAt = posSel(e.posEnd);
+    const negAt = posSel(e.negEnd);
+    const on = h('input', { type: 'checkbox', checked: e.on });
     queueMicrotask(() => name.focus());
     const saveIt = () => {
       if (!pos.value.trim() && !neg.value.trim()) return toast('正面和负面至少填一个', 'error');
-      const p = { id: e.id || uid(), name: name.value.trim() || '未命名', pos: pos.value.trim(), neg: neg.value.trim(), pin: e.pin, at: e.at || Date.now() };
+      const p = {
+        id: e.id || uid(), name: name.value.trim() || '未命名', pos: pos.value.trim(), neg: neg.value.trim(), pin: e.pin, at: e.at || Date.now(),
+        on: on.checked, posEnd: !!posAt.value, negEnd: !!negAt.value,
+      };
       ui.edit = null;
       lib.mutate((d) => {
         const i = d.presets.findIndex((x) => x.id === p.id);
@@ -563,9 +632,12 @@ export function createLibrary(deps) {
         else d.presets.push(p);
       });
     };
-    return h('div', { class: 'lib-form' }, name, pos, neg,
+    return h('div', { class: 'lib-form' }, name,
+      h('div', { class: 'lib-form-row' }, h('span', { class: 'muted' }, '正面'), h('span', { class: 'grow' }), posAt), pos,
+      h('div', { class: 'lib-form-row' }, h('span', { class: 'muted' }, '负面'), h('span', { class: 'grow' }), negAt), neg,
       h('div', { class: 'lib-form-row' },
-        h('button', { type: 'button', class: 'btn small ghost', onclick: () => { pos.value = document.getElementById('prompt').value; neg.value = document.getElementById('negative').value; } }, '用当前提示词填入'),
+        h('label', { class: 'fx-on' }, on, h('span', {}, '启用')),
+        h('button', { type: 'button', class: 'btn small ghost', title: '把编辑框里现在的正面 / 负面提示词复制过来', onclick: () => { pos.value = document.getElementById('prompt').value; neg.value = document.getElementById('negative').value; } }, '用当前提示词填入'),
         h('span', { class: 'grow' }),
         h('button', { type: 'button', class: 'btn small ghost', onclick: () => { ui.edit = null; paint(); } }, '取消'),
         h('button', { type: 'button', class: 'btn small primary', onclick: saveIt }, '保存')));
@@ -621,6 +693,8 @@ export function createLibrary(deps) {
     quickFavorite,
     pickWild,
     renderBar,
+    withFixed: (src) => withFixed(src, presets()),
+    stripFixed: (params) => stripFixed(params, presets()),
     saveSnapshot,
     hasCategory: (name) => lib.data.cats.some((c) => c.name.toLowerCase() === name.toLowerCase()),
     agent: agentApi(),
@@ -634,6 +708,11 @@ export function createLibrary(deps) {
     };
     const hit = (q, ...texts) => !q || texts.some((t) => (t || '').toLowerCase().includes(q));
     return {
+      /** 当前启用的固定词（生图时自动拼到提示词前后，不在 prompt 里） */
+      fixed: () => presets().filter((p) => p.on).map((p) => ({
+        name: p.name, positive: p.pos || undefined, positive_position: p.pos ? (p.posEnd ? 'suffix' : 'prefix') : undefined,
+        negative: p.neg || undefined, negative_position: p.neg ? (p.negEnd ? 'suffix' : 'prefix') : undefined,
+      })),
       search(query = '', limit = 30) {
         need(lib, '词库');
         const q = String(query).trim().toLowerCase();
@@ -643,7 +722,7 @@ export function createLibrary(deps) {
           favorites: d.items.filter((x) => hit(q, x.text, x.title, catName(x.cat))).slice(0, limit)
             .map((x) => ({ text: x.text, title: x.title || undefined, category: catName(x.cat) || '未分类' })),
           presets: d.presets.filter((p) => hit(q, p.name, p.pos, p.neg)).slice(0, limit)
-            .map((p) => ({ name: p.name, positive: p.pos, negative: p.neg, pinned: p.pin })),
+            .map((p) => ({ name: p.name, positive: p.pos, negative: p.neg, enabled: p.on, positive_position: p.posEnd ? 'suffix' : 'prefix', negative_position: p.negEnd ? 'suffix' : 'prefix', pinned: p.pin })),
         };
       },
       favorite(text, category = '') {

@@ -439,6 +439,12 @@ export function createAgent(deps) {
     ui.run.changed = true;
   }
 
+  /** 用户启用的固定词：生图时自动加，不在 prompt 里，助手别把它们重复写进提示词 */
+  function fixedWords() {
+    const list = deps.library?.fixed?.() || [];
+    return list.length ? { fixed_words: { note: '用户启用的固定词，生成时自动拼到 prompt / negative 的前面(prefix)或后面(suffix)，不在上面的 prompt 里，不要重复写进去', items: list } } : {};
+  }
+
   function inspect() {
     const s = deps.getState();
     const m = N.modelById(s.modelId);
@@ -455,6 +461,7 @@ export function createAgent(deps) {
       model: { id: m.id, name: modelName(m.id) },
       prompt: s.prompt,
       negative: s.negative,
+      ...fixedWords(),
       characters: s.characters.map((x, i) => ({
         index: i, enabled: x.enabled !== false, prompt: x.prompt, negative: x.negative, ...(s.autoPosition ? {} : { x: x.x, y: x.y }),
       })),

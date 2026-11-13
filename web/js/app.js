@@ -486,8 +486,6 @@ function bindControls() {
   if (UI_MODE === 'classic') $('#ui-switch').append(icon('swap', 15), h('span', {}, '新版界面'));
   for (const b of $('#mode-toggle').children) b.addEventListener('click', () => setTagMode(b.dataset.mode === 'tag'));
   setTagMode(!!safeStorage(TAGMODE_STORAGE));
-  $('#prompt').addEventListener('input', () => library.renderBar());
-  $('#negative').addEventListener('input', () => library.renderBar());
   // 记住最后编辑的是哪个输入框，打开 TAG 面板、词库时默认加到那里
   document.addEventListener('focusin', (e) => {
     const ta = e.target.matches?.('.controls .tb-add, .controls .tb') ? e.target.closest('.tb').ta : e.target;
@@ -1254,6 +1252,7 @@ const snapshotParams = (src = S) => structuredClone(pick(src, PARAM_KEYS));
 
 /** 生成用的提示词：去掉停用的词（// 开头），把 __分类__ 换成词库里随机一条 */
 function resolvedState(src = S) {
+  src = library.withFixed(src); // 启用的固定词在这里拼进去，编辑框里不出现
   const missing = new Set();
   const pickWild = (name) => {
     const v = library.pickWild(name);
@@ -1289,7 +1288,7 @@ async function addRecord(blob, info) {
 
 /** 检查当前参数能不能生成；能就返回空字符串 */
 function generateProblem(src) {
-  if (!src.prompt.trim() && !src.characters.some((c) => c.enabled && c.prompt.trim())) return '先写点提示词';
+  if (!library.withFixed(src).prompt.trim() && !src.characters.some((c) => c.enabled && c.prompt.trim())) return '先写点提示词';
   if (src.width % 64 || src.height % 64 || src.width * src.height > N.MAX_PIXELS) return '尺寸不合法：宽高需为 64 的倍数，且总像素不超过 3.1MP';
   return '';
 }
@@ -1662,7 +1661,7 @@ function afterBulkChange() {
 
 function reuseCurrent() {
   const p = cur().params;
-  Object.assign(S, structuredClone(pick(p, PARAM_KEYS.filter((k) => k !== 'seed'))));
+  Object.assign(S, structuredClone(library.stripFixed(pick(p, PARAM_KEYS.filter((k) => k !== 'seed')))));
   afterBulkChange();
   toast('已复用参数（种子没变，需要的话点「用此种子」）', 'ok');
 }
@@ -1699,6 +1698,7 @@ function parseMeta(c) {
     }
   }
   p.negative = neg;
+  Object.assign(p, library.stripFixed({ prompt: p.prompt, negative: p.negative }));
   const snap = (v) => (typeof v === 'number' ? +clamp(Math.round((v - 0.1) / 0.2) * 0.2 + 0.1, 0.1, 0.9).toFixed(1) : 0.5);
   p.characters = (v4?.char_captions || []).map((cc, i) => ({
     id: uid(), enabled: true, prompt: cc.char_caption || '', negative: v4n?.char_captions?.[i]?.char_caption || '',
@@ -1753,7 +1753,7 @@ async function handleImported(blob) {
 // 拖入的图片：meta 是图片里读到的参数；从云端图库取回：opts.params 已经是本页的设置格式
 function importDialog(blob, meta, opts = {}) {
   const url = URL.createObjectURL(blob);
-  const p = opts.params ? { characters: [], ucPreset: 'none', ...opts.params } : meta ? parseMeta(meta) : null;
+  const p = opts.params ? { characters: [], ucPreset: 'none', ...library.stripFixed(opts.params) } : meta ? parseMeta(meta) : null;
   const groups = p ? IMPORT_GROUPS.filter((g) => g[3](p)) : [];
   const picked = new Set(groups.map((g) => g[0]));
   const info = [];

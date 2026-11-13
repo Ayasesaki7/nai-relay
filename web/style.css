@@ -1268,6 +1268,21 @@ body:not(.tagmode) .tb { display: none; }
 .preset-bar { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
 .preset-bar .chip { height: 24px; padding: 0 9px; }
 .chip.small { height: 24px; padding: 0 9px; }
+/* 固定词条：生图时自动拼进提示词，不在编辑框里 */
+.preset-bar .fixed-head { gap: 4px; color: var(--muted); }
+.preset-bar .fixed-head.on { color: var(--text); }
+.preset-bar .fx-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: none; }
+.preset-bar .chip.on .fx-dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.preset-bar .chip:not(.on):not(.fixed-head) { opacity: 0.7; }
+.lib-row.preset.off { opacity: 0.6; }
+.lib-row.preset.off:hover { opacity: 0.85; }
+.lib-row.preset > .mini-switch { flex: none; align-self: center; }
+.fx-line { -webkit-line-clamp: 3; }
+.fx-pos { font: inherit; font-size: 10.5px; line-height: 1; padding: 2px 5px; margin: 0 5px 0 4px; border-radius: 4px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; vertical-align: 1px; }
+.fx-pos:hover { color: var(--text); border-color: var(--accent); }
+.fx-pos.end { color: var(--accent); }
+.lib-form .fx-on { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
+.lib-form .fx-on input { accent-color: var(--accent); margin: 0; }
 .chip.dashed { border-style: dashed; }
 
 .char-tools { display: inline-flex; }
