@@ -308,7 +308,7 @@ export function createApi(getKey, onUnauthorized) {
     return new Blob([head, mb, th, thumb || new Blob(), image || new Blob()]);
   }
 
-  async function request(method, path, { json, body, signal, binary = false, blob = false } = {}) {
+  async function request(method, path, { json, body, signal, binary = false, blob = false, stream = false } = {}) {
     const headers = { Authorization: `Bearer ${getKey()}` };
     if (json !== undefined) headers['Content-Type'] = 'application/json';
     if (body !== undefined) headers['Content-Type'] = 'application/octet-stream';
@@ -327,8 +327,10 @@ export function createApi(getKey, onUnauthorized) {
         msg = j.message || (typeof j.detail === 'string' ? j.detail : '') || msg;
       } catch {}
       if (res.status === 401 && msg === 'Invalid proxy key') onUnauthorized();
-      throw new ApiError(res.status, explain(res.status, msg), j);
+      // 助手的报错服务器已经写好了中文，不要套 NAI 的解释（429、402 意思不一样）
+      throw new ApiError(res.status, path.startsWith('/proxy/agent/') ? msg : explain(res.status, msg), j);
     }
+    if (stream) return res;
     if (blob) return res.blob();
     return binary ? new Uint8Array(await res.arrayBuffer()) : res.json();
   }
@@ -366,6 +368,12 @@ export function createApi(getKey, onUnauthorized) {
     booruSources: () => request('GET', '/proxy/booru/sources'),
     booruPosts: (params, signal) => request('GET', `/proxy/booru/posts?${new URLSearchParams(params)}`, { signal }),
     booruImage: (url, signal) => request('GET', `/proxy/booru/image?u=${encodeURIComponent(url)}`, { blob: true, signal }),
+    // 生图助手：大模型连接存在服务器上，对话经服务器转发（流式）
+    agentConfig: () => request('GET', '/proxy/agent/config'),
+    agentSave: (id, body) => (id ? request('PATCH', `/proxy/agent/connections/${id}`, { json: body }) : request('POST', '/proxy/agent/connections', { json: body })),
+    agentDelete: (id) => request('DELETE', `/proxy/agent/connections/${id}`),
+    agentModels: (id) => request('GET', `/proxy/agent/connections/${id}/models`),
+    agentChat: (body, signal) => request('POST', '/proxy/agent/chat', { json: body, signal, stream: true }),
   };
 }
 

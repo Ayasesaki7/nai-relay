@@ -22,6 +22,7 @@ from .userdata import UserData, create_userdata_router
 from .gallery import Gallery, create_gallery_router
 from .assets import Assets, create_assets_router
 from .booru import Booru, create_booru_router
+from .agent import AgentStore, Upstream, create_agent_router
 
 IMAGE = config.IMAGE_UPSTREAM
 API = config.API_UPSTREAM
@@ -128,6 +129,8 @@ app.include_router(create_userdata_router(control, user_data))
 app.include_router(create_gallery_router(control, gallery))
 app.include_router(create_assets_router(control, assets))
 app.include_router(create_booru_router(control, Booru(lambda: client)))
+agent_store = AgentStore(os.environ.get('AGENT_FILE') or Path(control.path).parent / 'agent.json')
+app.include_router(create_agent_router(control, agent_store, Upstream(lambda: client)))
 
 
 def _error(status: int, message: str) -> JSONResponse:

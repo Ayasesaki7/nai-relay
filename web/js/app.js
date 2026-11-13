@@ -5,6 +5,7 @@ import { createLibrary } from './library.js';
 import { createGallery } from './gallery.js';
 import { createAssets } from './assets.js';
 import { createBooru } from './booru.js';
+import { createAgent } from './agent.js';
 import {
   $, h, icon, blobToB64, bytesToB64, hashString, padForReference, fitDims, resizeToPng, makeThumb,
   quantizeMask, unzip, isImageBytes, readPngText, readStealthMeta, zipFiles, store, safeStorage, uid, randomSeed, clamp,
@@ -140,6 +141,25 @@ const booru = createBooru({
   initialTarget: () => lastTagTarget,
   editPrompt: (ta, v) => editPrompt(ta, v),
   importBlob: (blob) => handleImported(blob),
+});
+
+const agent = createAgent({
+  api,
+  getKey: () => app.key,
+  isAdmin: () => !!app.user?.admin,
+  toast: (...a) => toast(...a),
+  openModal: (...a) => openModal(...a),
+  confirmDialog: (...a) => confirmDialog(...a),
+  openMenu: (...a) => openMenu(...a),
+  getState: () => S,
+  captureState: () => snapshotParams(),
+  applyParams: (p) => applyParams(p),
+  freezeState: () => freezeState(),
+  generateProblem: (src) => generateProblem(src),
+  costInfo: (src) => costInfo(src),
+  agentGenerate: (frozen) => agentGenerate(frozen),
+  getHistory: () => app.history,
+  library: library.agent,
 });
 
 /** 程序改提示词输入框：记进撤销栈，然后触发 input 让设置和标签视图跟着更新 */
@@ -441,6 +461,8 @@ function bindControls() {
   $('#booru-open').addEventListener('click', () => booru.open());
   $('#gallery-open').append(icon('cloud', 15), h('span', {}, '我的图库'));
   $('#gallery-open').addEventListener('click', () => gallery.open());
+  $('#agent-open').append(icon('sparkles', 15), h('span', {}, '助手'));
+  $('#agent-open').addEventListener('click', () => agent.toggle());
   for (const b of $('#mode-toggle').children) b.addEventListener('click', () => setTagMode(b.dataset.mode === 'tag'));
   setTagMode(!!safeStorage(TAGMODE_STORAGE));
   $('#prompt').addEventListener('input', () => library.renderBar());
@@ -740,9 +762,9 @@ function charRefCard(r) {
 const vibeKey = (v, modelId = model().id) => `${(v.hash ||= hashString(v.b64))}:${v.info.toFixed(2)}:${modelId}`;
 
 /** 本浏览器没有这份编码时，看素材库（服务器）里有没有，有就取回来存到本地 */
-async function pullVibeEncoding(v, key) {
+async function pullVibeEncoding(v, key, modelId = model().id) {
   if (!v.asset) return null;
-  const bytes = await assets.getEncoding(v.asset, model().id, v.info);
+  const bytes = await assets.getEncoding(v.asset, modelId, v.info);
   if (!bytes) return null;
   const enc = bytesToB64(bytes);
   await store.putVibe(key, enc).catch(() => {});
@@ -940,20 +962,21 @@ function unuseAsset(x) {
   refsChanged();
 }
 
-async function encodeVibes(signal) {
+async function encodeVibes(signal, src = S) {
   const out = [];
-  for (const [i, v] of S.vibes.entries()) {
-    const key = vibeKey(v);
+  const modelId = src.modelId;
+  for (const [i, v] of src.vibes.entries()) {
+    const key = vibeKey(v, modelId);
     let enc = await store.getVibe(key).catch(() => null);
-    if (!enc) enc = await pullVibeEncoding(v, key).catch(() => null);
+    if (!enc) enc = await pullVibeEncoding(v, key, modelId).catch(() => null);
     if (!enc) {
       if (v.encOnly) throw new Error(`氛围参考「${v.name || i + 1}」没有原图，只能用于导入时自带编码的模型`);
-      setBusyText(`编码氛围参考 ${i + 1}/${S.vibes.length}`);
-      const bytes = await api.encodeVibe({ image: v.b64, model: model().id, information_extracted: v.info }, signal);
+      setBusyText(`编码氛围参考 ${i + 1}/${src.vibes.length}`);
+      const bytes = await api.encodeVibe({ image: v.b64, model: modelId, information_extracted: v.info }, signal);
       enc = bytesToB64(bytes);
       store.putVibe(key, enc).catch(() => {});
       // 素材库里的氛围：编码顺手存到服务器，下次换设备不用再花 Anlas
-      if (v.asset) assets.putEncoding(v.asset, model().id, v.info, bytes).catch(() => {});
+      if (v.asset) assets.putEncoding(v.asset, modelId, v.info, bytes).catch(() => {});
       v.cached = true;
       paintVibeStatus(v);
     }
@@ -1209,7 +1232,7 @@ async function readNaiMeta(blob) {
 const snapshotParams = (src = S) => structuredClone(pick(src, PARAM_KEYS));
 
 /** 生成用的提示词：去掉停用的词（// 开头），把 __分类__ 换成词库里随机一条 */
-function resolvedState() {
+function resolvedState(src = S) {
   const missing = new Set();
   const pickWild = (name) => {
     const v = library.pickWild(name);
@@ -1218,10 +1241,10 @@ function resolvedState() {
   };
   const r = (text) => resolvePrompt(text || '', pickWild);
   const out = {
-    ...S,
-    prompt: r(S.prompt),
-    negative: r(S.negative),
-    characters: S.characters.map((c) => ({ ...c, prompt: r(c.prompt), negative: r(c.negative) })),
+    ...src,
+    prompt: r(src.prompt),
+    negative: r(src.negative),
+    characters: src.characters.map((c) => ({ ...c, prompt: r(c.prompt), negative: r(c.negative) })),
   };
   if (missing.size) toast(`词库里没有这些分类：${[...missing].join('、')}，对应的随机词会原样发送`, 'error', 6000);
   return out;
@@ -1243,53 +1266,110 @@ async function addRecord(blob, info) {
   return rec;
 }
 
+/** 检查当前参数能不能生成；能就返回空字符串 */
+function generateProblem(src) {
+  if (!src.prompt.trim() && !src.characters.some((c) => c.enabled && c.prompt.trim())) return '先写点提示词';
+  if (src.width % 64 || src.height % 64 || src.width * src.height > N.MAX_PIXELS) return '尺寸不合法：宽高需为 64 的倍数，且总像素不超过 3.1MP';
+  return '';
+}
+
+/** 按给定参数生成并存进历史；src 默认是界面上的参数，助手生图时传入批准那一刻冻结的参数 */
+async function generateWith(src, signal) {
+  const R = resolvedState(src);
+  const c = N.capsOf(N.modelById(src.modelId));
+  const seed = src.seed !== '' ? Number(src.seed) : randomSeed();
+  const vibes = c.vibe && src.vibes.length && !(c.charRef && src.charRefs.length) ? await encodeVibes(signal, src) : [];
+  const body = N.buildGenerateBody(R, { seed, vibes });
+  setBusyText(body.action === 'infill' ? '局部重绘中' : body.action === 'img2img' ? '图生图中' : '生成中');
+  const blobs = await extractImages(await api.generate(body, signal));
+  const params = snapshotParams(R);
+  const recs = [];
+  for (const [i, blob] of blobs.entries()) {
+    const meta = await readNaiMeta(blob);
+    const tool = body.action === 'infill' ? '重绘' : body.action === 'img2img' ? '图生图' : null;
+    recs.push(await addRecord(blob, { kind: 'gen', tool, params: { ...params, seed: meta?.seed ?? seed + i } }));
+  }
+  showView(recs, 0);
+  return recs;
+}
+
 async function generate() {
   if (app.busy) {
     app.busy.abort();
     return;
   }
-  const R = resolvedState();
-  if (!R.prompt.trim() && !R.characters.some((c) => c.enabled && c.prompt.trim())) {
-    toast('先写点提示词', 'error');
-    $('#prompt').focus();
+  const problem = generateProblem(S);
+  if (problem) {
+    toast(problem, 'error');
+    if (problem.startsWith('先写')) $('#prompt').focus();
     return;
   }
-  if (S.width % 64 || S.height % 64 || S.width * S.height > N.MAX_PIXELS) {
-    toast('尺寸不合法：宽高需为 64 的倍数，且总像素不超过 3.1MP', 'error');
-    return;
-  }
-  const c = caps();
-  const seed = S.seed !== '' ? Number(S.seed) : randomSeed();
-  const ok = await runTask('生成中', async (signal) => {
-    const vibes = c.vibe && S.vibes.length && !(c.charRef && S.charRefs.length) ? await encodeVibes(signal) : [];
-    const body = N.buildGenerateBody(R, { seed, vibes });
-    setBusyText(body.action === 'infill' ? '局部重绘中' : body.action === 'img2img' ? '图生图中' : '生成中');
-    const blobs = await extractImages(await api.generate(body, signal));
-    const params = snapshotParams(R);
-    const recs = [];
-    for (const [i, blob] of blobs.entries()) {
-      const meta = await readNaiMeta(blob);
-      const tool = body.action === 'infill' ? '重绘' : body.action === 'img2img' ? '图生图' : null;
-      recs.push(await addRecord(blob, { kind: 'gen', tool, params: { ...params, seed: meta?.seed ?? seed + i } }));
-    }
-    showView(recs, 0);
-  });
+  const ok = await runTask('生成中', (signal) => generateWith(S, signal));
   if (ok) refreshSub();
+}
+
+/** 助手生图：参数是批准时冻结的，之后界面上再改也不影响这一次 */
+async function agentGenerate(frozen) {
+  const problem = generateProblem(frozen);
+  if (problem) throw new Error(problem);
+  if (app.busy) throw new Error('现在有别的生成任务在跑，等它结束再试');
+  let recs = null;
+  let err = null;
+  const ok = await runTask('助手生图中', async (signal) => {
+    try {
+      recs = await generateWith(frozen, signal);
+    } catch (e) {
+      err = e;
+      throw e;
+    }
+  });
+  if (ok) {
+    refreshSub();
+    return recs;
+  }
+  if (err?.name === 'AbortError') throw new Error('用户取消了这次生成');
+  throw err || new Error('没能提交生成任务');
+}
+
+/** 冻结一份生成参数：文字参数深拷贝，参考图沿用同一份（不会被助手改） */
+const freezeState = () => ({ ...structuredClone(pick(S, PARAM_KEYS)), base: S.base, charRefs: [...S.charRefs], vibes: [...S.vibes] });
+
+/** 改参数（助手的修改、撤销都走这里）：提示词进撤销栈，换模型走 switchModel */
+function applyParams(patch) {
+  const p = structuredClone(patch);
+  if (p.modelId && p.modelId !== S.modelId) switchModel(p.modelId);
+  delete p.modelId;
+  for (const k of ['prompt', 'negative']) {
+    if (k in p) editPrompt($(`#${k}`), p[k] ?? '');
+    delete p[k];
+  }
+  if (p.characters) p.characters = p.characters.map((c) => ({ enabled: true, prompt: '', negative: '', x: 0.5, y: 0.5, ...c, id: c.id || uid() }));
+  Object.assign(S, pick(p, PARAM_KEYS));
+  renderAll();
+  save();
+}
+
+function costInfo(src = S) {
+  if (!app.sub) return null;
+  const est = N.estimateCost(src, app.sub);
+  const c = N.capsOf(N.modelById(src.modelId));
+  const usingVibes = c.vibe && src.vibes.length && !(c.charRef && src.charRefs.length);
+  const extra = est.extra + (usingVibes ? src.vibes.filter((v) => v.cached === false).length * 2 : 0);
+  let text;
+  if (est.kind === 'free') text = extra ? `免费 + ${extra}` : '免费';
+  else if (est.kind === 'allowance') text = extra ? `额度 + ${extra}` : 'V5 额度';
+  else text = `≈ ${est.base + extra} Anlas`;
+  return { ...est, extra, text, anlas: est.kind === 'anlas' ? est.base + extra : extra };
 }
 
 function updateCost() {
   const el = $('#cost');
-  if (!app.sub) {
+  const est = costInfo();
+  if (!est) {
     el.textContent = '';
     return;
   }
-  const est = N.estimateCost(S, app.sub);
-  const c = caps();
-  const usingVibes = c.vibe && S.vibes.length && !(c.charRef && S.charRefs.length);
-  const extra = est.extra + (usingVibes ? S.vibes.filter((v) => v.cached === false).length * 2 : 0);
-  if (est.kind === 'free') el.textContent = extra ? `免费 + ${extra}` : '免费';
-  else if (est.kind === 'allowance') el.textContent = extra ? `额度 + ${extra}` : 'V5 额度';
-  else el.textContent = `≈ ${est.base + extra} Anlas`;
+  el.textContent = est.text;
   el.title = `${est.discount && S.nSamples > 1 ? `Opus 免掉其中 1 张，其余每张 ${est.per} Anlas。` : ''}${COST_NOTE}`;
 }
 
@@ -2061,6 +2141,7 @@ function resetUserView() {
   gallery.reset();
   assets.reset();
   booru.reset();
+  agent.reset();
   resetHistories();
   Object.assign(S, defaults());
   renderAll();
@@ -2077,6 +2158,7 @@ async function enter() {
   library.load();
   gallery.load();
   assets.load();
+  agent.load();
   $('#login').hidden = true;
   $('#user-name').textContent = me.user;
   $('#manage-link').hidden = !me.is_admin;

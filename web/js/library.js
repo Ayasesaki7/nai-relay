@@ -622,5 +622,64 @@ export function createLibrary(deps) {
     renderBar,
     saveSnapshot,
     hasCategory: (name) => lib.data.cats.some((c) => c.name.toLowerCase() === name.toLowerCase()),
+    agent: agentApi(),
   };
+
+  /** 给生图助手用的读写接口：出错直接抛异常，由助手转告给大模型 */
+  function agentApi() {
+    const need = (doc, what) => {
+      if (doc.state === 'idle' || doc.state === 'error') doc.load();
+      if (doc.state !== 'ready') throw new Error(`${what}还没从服务器载入，稍后再试`);
+    };
+    const hit = (q, ...texts) => !q || texts.some((t) => (t || '').toLowerCase().includes(q));
+    return {
+      search(query = '', limit = 30) {
+        need(lib, '词库');
+        const q = String(query).trim().toLowerCase();
+        const d = lib.data;
+        return {
+          categories: d.cats.map((c) => ({ name: c.name, count: d.items.filter((x) => x.cat === c.id).length, wildcard: `__${c.name}__` })),
+          favorites: d.items.filter((x) => hit(q, x.text, x.title, catName(x.cat))).slice(0, limit)
+            .map((x) => ({ text: x.text, title: x.title || undefined, category: catName(x.cat) || '未分类' })),
+          presets: d.presets.filter((p) => hit(q, p.name, p.pos, p.neg)).slice(0, limit)
+            .map((p) => ({ name: p.name, positive: p.pos, negative: p.neg, pinned: p.pin })),
+        };
+      },
+      favorite(text, category = '') {
+        need(lib, '词库');
+        text = String(text || '').trim();
+        if (!text) throw new Error('要收藏的内容是空的');
+        let cat = '';
+        if (category && category !== '未分类') {
+          const c = lib.data.cats.find((x) => x.name.toLowerCase() === String(category).trim().toLowerCase());
+          if (!c) throw new Error(`没有「${category}」这个分类，现有分类：${lib.data.cats.map((x) => x.name).join('、') || '无'}`);
+          cat = c.id;
+        }
+        const key = splitPrompt(text).map(segKey).join(',');
+        if (lib.data.items.some((x) => x.cat === cat && splitPrompt(x.text).map(segKey).join(',') === key)) return { saved: false, reason: '这个分类里已经有了' };
+        const item = { id: uid(), text, title: '', cat, at: Date.now() };
+        if (!lib.mutate((d) => { if (!d.items.some((x) => x.id === item.id)) d.items.unshift(item); })) throw new Error('词库保存失败');
+        return { saved: true, category: catName(cat) || '未分类' };
+      },
+      snapshots(limit = 30) {
+        need(snaps, '快照');
+        return snaps.data.items.slice(0, limit).map((s) => ({
+          id: s.id, name: s.name, auto: s.auto || undefined, saved_at: new Date(s.at).toISOString(),
+          prompt: (s.data.prompt || '').slice(0, 300), characters: (s.data.characters || []).length,
+        }));
+      },
+      saveSnapshot(name) {
+        need(snaps, '快照');
+        if (!saveSnapshot(String(name || '').slice(0, 80) || '助手保存', false)) throw new Error('快照没能保存');
+        return { saved: true };
+      },
+      restoreSnapshot(id) {
+        need(snaps, '快照');
+        const s = snaps.data.items.find((x) => x.id === id);
+        if (!s) throw new Error('没有这个快照，先用 list_snapshots 看看');
+        restoreSnapshot(s);
+        return { restored: s.name };
+      },
+    };
+  }
 }
